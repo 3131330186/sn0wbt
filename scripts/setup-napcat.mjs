@@ -136,10 +136,36 @@ async function main() {
     fs.rmSync(NAPCAT_DIR, { recursive: true, force: true });
   }
 
-  const url = await latestAssetUrl();
-  const zipPath = path.join(NAPCAT_DIR, 'napcat-shell.zip');
-  fs.mkdirSync(NAPCAT_DIR, { recursive: true });
-  await download(url, zipPath);
+  // ── 离线安装通道（NAPCAT_LOCAL_ZIP）────────────────────────────────
+  // 现实背景（2026-11-14 实测）：部分网络环境对 GitHub release 资产/API 有
+  // 拦截（api.github.com 返回伪造 404/空列表、github.com 的 release 页面被
+  // 掏空）——脚本自带的在线下载在这种网络下永远失败，但浏览器往往可以下载。
+  // 本通道允许用户手动拿到 zip 后从本地文件安装：完整性由 NAPCAT_SHA256
+  // 保证（离线模式强制要求显式提供，防止"随便一个 zip 就当官方包装"）。
+  const localZip = (process.env.NAPCAT_LOCAL_ZIP || '').trim();
+  let zipPath;
+  if (localZip) {
+    if (!fs.existsSync(localZip)) die(`离线安装失败：本地 zip 不存在: ${localZip}`);
+    const explicitSha = (process.env.NAPCAT_SHA256 || '').trim();
+    if (!explicitSha) {
+      die('离线安装必须显式提供 NAPCAT_SHA256=<zip 的 sha256>。\n'
+        + '  哈希来源：NapCat 发布页该版本说明中的 "Shell ZIP SHA256"（发布者自带完整性声明），\n'
+        + '  或任何你信任的渠道核对后填写。在线下载路径不受此限制（哈希来自 GitHub API 资产 digest）。');
+    }
+    const actual = createHash('sha256').update(fs.readFileSync(localZip)).digest('hex');
+    if (actual !== explicitSha.toLowerCase()) {
+      die(`离线 zip SHA256 不匹配！\n  期望: ${explicitSha.toLowerCase()}\n  实际: ${actual}\n  这个文件不是你声明的那个版本，拒绝安装。`);
+    }
+    log(`离线 zip SHA256 校验通过 ✓（${actual.slice(0, 16)}…）`);
+    zipPath = path.join(NAPCAT_DIR, 'napcat-shell.zip');
+    fs.mkdirSync(NAPCAT_DIR, { recursive: true });
+    fs.copyFileSync(localZip, zipPath);
+  } else {
+    const url = await latestAssetUrl();
+    zipPath = path.join(NAPCAT_DIR, 'napcat-shell.zip');
+    fs.mkdirSync(NAPCAT_DIR, { recursive: true });
+    await download(url, zipPath);
+  }
 
   log('解压到', SHELL_DIR);
   unzip(zipPath, SHELL_DIR);
