@@ -111,10 +111,13 @@ function unzip(zipPath, destDir) {
   // （对照 setup.mjs 的 900s 上限）。execFileSync 超时会杀掉子进程并抛错。
   const OPTS = { stdio: 'inherit', timeout: 900_000 };
   if (process.platform === 'win32') {
-    // Windows 自带 tar 支持 zip；PowerShell Expand-Archive 慢且对长路径不稳
-    execFileSync('tar', ['-xf', zipPath, '-C', destDir], OPTS);
+    // Windows 自带 bsdtar 支持 zip。⚠️ 必须用 System32 绝对路径：
+    // Git Bash 环境里 PATH 的 GNU tar 优先且**不支持 zip**
+    //（实测报 "This does not look like a tar archive"，2026-11-14）。
+    const systemTar = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+    execFileSync(systemTar, ['-xf', zipPath, '-C', destDir], OPTS);
   } else {
-    execFileSync('unzip', ['-o', zipPath, '-d', destDir], OPTS);
+    execFileSync('unzip', ['-o', zipPath, '-C', destDir], OPTS);
   }
 }
 
