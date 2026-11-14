@@ -103,9 +103,10 @@ export function createRoutes(deps) {
     // ── 状态 / 数据目录 / 重置 ─────────────────────────────────────────
     {
       method: 'GET', pattern: '/api/channels',
-      handler: async () => {
+      handler: async ({ res, json }) => {
         // 通道元数据快照（含能力与实时状态）。只读诊断面，不暴露通道内部引用。
-        return { channels: channelManager.list() };
+        // ⚠️ 本框架 handler 必须自己调 json() 写响应，返回裸对象会永远挂起。
+        return json(res, 200, { channels: channelManager.list() });
       }
     },
     {
