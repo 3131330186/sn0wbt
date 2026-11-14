@@ -128,8 +128,8 @@ export function createRoutes(deps) {
         // 诊断：把"连不上"拆成三种用户能看懂的原因（给 UI 就绪度体检用）。
         let onebotDiagnosis = '';
         if (!onebot.connected) {
-          if (!slRunning) onebotDiagnosis = 'SnowLuma 未运行：请到 SnowLuma 页签启动';
-          else if (!obPortOpen) onebotDiagnosis = 'SnowLuma 已运行但无账号登录：请在 QQ 里完成登录（登录后数秒内会自动连上）';
+          if (!slRunning) onebotDiagnosis = 'QQ 协议端（NapCat）未运行：请先启动 NapCat 并登录小号';
+          else if (!obPortOpen) onebotDiagnosis = 'NapCat 已运行但无账号登录：请完成扫码/快速登录（登录后数秒内会自动连上）';
           else if (String(onebot.lastConnectError || '').includes('401')) onebotDiagnosis = '访问令牌不匹配：正在自动轮换重试，若持续出现请在设置里核对 OneBot 令牌';
           else onebotDiagnosis = onebot.lastConnectError ? `连接失败：${String(onebot.lastConnectError).slice(0, 120)}` : '连接中…';
         }

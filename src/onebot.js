@@ -229,6 +229,8 @@ export class OneBotClient {
       let event = null;
       try { event = JSON.parse(String(data)); } catch { return; }
       if (!event || typeof event !== 'object') return;
+      // ⚠️ P1 临时收包日志（验证完移除）：确认 NapCat → onebot.js 的事件到达
+      if (event.post_type === 'message') console.log(`[onebot][recv] ${event.message_type ?? '?'} from ${event.user_id ?? '?'}: ${String(event.raw_message ?? '').slice(0, 40)}`);
       try { this.onEvent(event); } catch (error) { console.error('[onebot] 事件处理出错:', error); }
     });
     socket.on('close', () => {

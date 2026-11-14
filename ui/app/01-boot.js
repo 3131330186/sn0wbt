@@ -48,13 +48,13 @@ function updateReadinessDots(s) {
   dots[0].className = 'rdot' + (qqRunning ? ' on' : '');
   dots[0].title = qqRunning ? 'QQ 内核运行中' : 'QQ 内核未运行（点击前往启动）';
 
-  // 圆点 1：SnowLuma
+  // 圆点 1：QQ 协议端（NapCat WebUI）
   dots[1].className = 'rdot' + (slRunning ? ' on' : '');
-  dots[1].title = slRunning ? 'SnowLuma 运行中' : 'SnowLuma 未运行（点击前往启动）';
+  dots[1].title = slRunning ? 'NapCat 运行中' : 'NapCat 未运行（启动 NapCat 后自动就绪）';
 
   // 圆点 2：OneBot
   dots[2].className = 'rdot' + (obConnected ? ' on' : (slRunning ? ' wait' : ''));
-  dots[2].title = obConnected ? 'OneBot 已连接' : (s?.onebot?.diagnosis || (slRunning ? 'OneBot 连接中…' : 'OneBot 未连接'));
+  dots[2].title = obConnected ? 'OneBot 已连接' : (s?.onebot?.diagnosis || 'OneBot 连接中…');
 
   // 圆点 3：配置完成
   dots[3].className = 'rdot' + (cfgReady ? ' on' : '');
