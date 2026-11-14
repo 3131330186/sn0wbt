@@ -1,14 +1,14 @@
 {
-  "name": "qq-agent",
-  "version": "0.7.1",
+  "name": "sn0wbot",
+  "version": "0.8.0",
   "private": false,
-  "description": "QQ 群 AI 机器人（桌面版）：事件驱动的无状态 Agent，接 OpenAI 兼容 API，带会话式控制台。",
+  "description": "sn0wbot：通用软件 Agent 中枢（桌面版）——通道框架统一连接 QQ、浏览器、邮件等多软件，事件驱动的无状态 Agent，接 OpenAI 兼容 API，带会话式控制台。",
   "type": "module",
   "main": "electron/main.js",
   "build": {
-    "appId": "cn.kondius.qq-agent",
-    "productName": "QQ Agent",
-    "artifactName": "QQ-Agent-V0.7.1-Setup.exe",
+    "appId": "cn.kondius.sn0wbot",
+    "productName": "Sn0wBot",
+    "artifactName": "Sn0wBot-V0.8.0-Setup.exe",
     "asar": false,
     "files": [
       "**/*",
@@ -40,7 +40,7 @@
       "allowToChangeInstallationDirectory": true,
       "allowElevation": false,
       "deleteAppDataOnUninstall": false,
-      "shortcutName": "QQ Agent",
+      "shortcutName": "Sn0wBot",
       "include": "build/installer.nsh"
     }
   },
@@ -55,7 +55,7 @@
     "setup": "node scripts/setup.mjs",
     "setup:check": "node scripts/setup.mjs --check",
     "setup:napcat": "node scripts/setup-napcat.mjs",
-    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-delete-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/tools-skill-audit.mjs --hermetic && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/wake-semantics-test.mjs && node test/store-persist-test.mjs && node test/session-days-prune-test.mjs && node test/vision-model-routing-test.mjs && node test/device-bridge-test.mjs && node test/abort-guard-test.mjs && node test/voice-call-probe-test.mjs && node test/voice-call-session-test.mjs && node test/voice-call-autoanswer-test.mjs && node test/voice-singing-test.mjs && node test/speech-test.mjs && node test/speech-adapters-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/webchat-test.mjs && node test/webchat-remote-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/web-search-parse.mjs && node test/model-switch-key-test.mjs",
+    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-delete-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/channels-test.mjs && node test/tools-skill-audit.mjs --hermetic && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/wake-semantics-test.mjs && node test/store-persist-test.mjs && node test/session-days-prune-test.mjs && node test/vision-model-routing-test.mjs && node test/device-bridge-test.mjs && node test/abort-guard-test.mjs && node test/voice-call-probe-test.mjs && node test/voice-call-session-test.mjs && node test/voice-call-autoanswer-test.mjs && node test/voice-singing-test.mjs && node test/speech-test.mjs && node test/speech-adapters-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/webchat-test.mjs && node test/webchat-remote-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/web-search-parse.mjs && node test/model-switch-key-test.mjs",
     "test:whitelist": "node test/onebot-whitelist-test.mjs",
     "test:sticker": "node test/sticker-collect-test.mjs",
     "test:msgid": "node test/message-id-test.mjs",
@@ -96,23 +96,25 @@
   "license": "MIT",
   "author": "Kondius",
   "keywords": [
-    "qq",
-    "bot",
+    "sn0wbot",
+    "channel",
     "agent",
     "openai",
     "onebot",
+    "qq",
+    "browser",
     "llm",
     "desktop",
     "electron"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Nakie-zjm/qq-agent-maintained.git"
+    "url": "https://github.com/3131330186/sn0wbot.git"
   },
   "bugs": {
-    "url": "https://github.com/Nakie-zjm/qq-agent-maintained/issues"
+    "url": "https://github.com/3131330186/sn0wbot/issues"
   },
-  "homepage": "https://github.com/Nakie-zjm/qq-agent-maintained#readme",
+  "homepage": "https://github.com/3131330186/sn0wbot#readme",
   "allowScripts": {
     "electron@33.4.11": true,
     "electron-winstaller@5.4.0": true

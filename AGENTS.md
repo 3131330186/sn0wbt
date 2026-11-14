@@ -1,28 +1,41 @@
-# QQ Agent（个人维护版）· 维护方针
+# sn0wbot · 项目守则
 
 本文件是给 AI 助手（ZCode 等）看的项目守则。**每次在这个项目里干活之前先读完。**
 
-## 仓库方针（最高优先级）
+## 项目定位（最高优先级）
 
-- **只改本仓库**：`origin = https://github.com/3131330186/qqagent.git`（私有）。所有功能、修复、版本升级都在这里做。
-- **不回馈上游**：不向 `Nakie-zjm/qq-agent-maintained` 提 PR / issue / 任何形式的贡献。这是用户明确决定的原则——做自己的版本，不做上游的搬运工。
-- 上游仓库**只读参考**：可以 fetch 上游看作者做了什么、抄思路；要不要同步由用户逐次决定，AI 不得擅自 merge/rebase 上游。
+- sn0wbot（v0.8.0 起）= **通用软件 Agent 中枢**：核心引擎自 QQ Agent v0.7.1 移植（D:\qq-agent-maintained，已冻结只读），QQ 从"全部"降为"通道之一"。
+- **框架优先**：新增能力一律走 `src/channels/` 通道框架（见下节），不许把新软件逻辑直写进 app.js/onebot.js。
+- 总体设计文档在 ZCode 工作区 `DESIGN.md`（跨会话记忆），仓库内以本文件为开发守则。
+
+## 仓库方针
+
+- 本仓库：`D:\sn0wbot`（origin 待用户建远程后补：`github.com/3131330186/sn0wbot`）。
+- 旧仓库 `D:\qq-agent-maintained`（origin `github.com/3131330186/qqagent`，私有）**只读参考 + 回退锚点**，不回馈其上游 `Nakie-zjm/qq-agent-maintained`，也不得擅自 merge。
 
 ## 提交与发布纪律
 
 - 提交信息用中文，格式 `type(scope): 摘要`（feat/fix/perf/docs/chore）。
-- 提交前 `npm test` 必须全绿；push 后用 `check_ci.ps1` 的思路确认 GitHub Actions 绿（token 走 git credential fill，**永不打印**）。
-- 版本号只在用户发话时升；当前 **v0.7.0**（tag `v0.7.0`，= v0.6.1 + 实时语音通话 v1：QQ 私聊经虚拟声卡桥接，VAD 断句 → ASR → 人设 LLM → TTS → 通话播放，UIA 自动接听 + 白名单，打断 barge-in，通话回复消毒）。
-- 回档锚点：tag `pre-device-control` = 设备功能加入前稳定态；`v0.6.1` = 评审修复定版；`v0.7.0` = 语音通话版。
+- 提交前 `npm test` 必须全绿；push 后确认 GitHub Actions 绿（token 走 git credential fill，**永不打印**）。
+- 版本号只在用户发话时升；当前 **v0.8.0**（sn0wbot 起点 = 移植版 + 通道框架）。
 
 ## 运行纪律（防事故）
 
-- 机器人运行时**绝不同时登录日常 QQ**：SnowLuma `hookAutoLoad: true` 会挂钩任何在跑的 QQ，双开 = 群里重复回复。跑 bot 前先完全退出日常 QQ。
+- 机器人运行时**绝不同时登录日常 QQ**：协议端（SnowLuma/NapCat）`hookAutoLoad` 会挂钩任何在跑的 QQ，双开 = 群里重复回复。跑 bot 前先完全退出日常 QQ；同一账号同时只允许一个 QQ 通道后端启用。
 - `data/` 目录（密钥/记忆/存档）**永不进 git**（已 gitignore，动配置前确认没把它带进去）。
 - 用户要打游戏时避免重负载操作；改代码注意 `store.js` 落盘是防抖合并的（500ms），别在业务代码里绕过 store 直读写存档文件。
 - **带表单的独立控制台页**（外联/语音模式）：轮询和"刷新状态"只允许替换状态卡节点（`renderXxxStatusCard`），**绝不整页 innerHTML 重建** —— 重建会把用户选到一半的文件、输入中的内容全部吹掉（v0.6.0 前真实踩过两次）。
 - 浏览器对 `.m4a/.aac` 的 DataURL 常标 `application/octet-stream` —— 音频上传的格式判定一律用**魔数嗅探**（`sniffAudioExt`），不信任前端 MIME。
 - ⚠️ **本机 node（v24.20.0，C:\Program Files\nodejs）解析器损坏**：`.mjs` 文件里的**解构 `as` 重命名**（`const { x as y } = ...`，含动态 import 解构）报 `Unexpected identifier 'as'`；静态 `import { x as y }` 和 **CJS** 不受影响。规避：`.mjs`/测试里用整对象接收 + 属性访问，别写解构 `as`；`node --input-type=module -e` 同样别用。
+
+## sn0wbot 通道框架方针（v0.8 起）
+
+- `src/channels/types.js` 定义 Channel 接口与出站状态（`sent/failed/uncertain`）；每个通道声明 `capabilities`（如 `message/control/verifiedSender/mediaIn`），**无对应能力的调用返回结构化错误，不许静默、不许伪造成功**。
+- `src/channels/manager.js` 是通道注册/启停/路由的唯一入口；入站事件经 `manager` 规范化后进 store→orchestrator 现有管道，**核心引擎不感知通道细节**。
+- QQ 是第一个通道（`src/channels/qq/`），包装移植的 onebot.js；后续 browser/mail/office/windows-sidecar 都实现同一接口。
+- UIA 类通道的 `senderId` 常不可验证 → 事件带 `confidence: 'unverified'`，**未验证发送者的群消息不得写入主人私人长期记忆，也不得触发电脑操作**。
+- 所有鼠标键盘类技能（QQ 桥接、windows sidecar）共享**桌面互斥锁**：用户开始输入/移动焦点时让出。
+- 新通道必须带密闭测试（对齐现有假设备/假服务测试模式）。
 
 ## 项目速查
 
