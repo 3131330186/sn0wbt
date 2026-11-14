@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getConfig, updateConfig, ROOT, DATA_DIR } from './config.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from './onebot.js';
+import { ChannelManager, registerBuiltinChannels } from './channels/manager.js';
 import { isAtMe } from './prompt.js';
 import { ChatStore } from './store.js';
 import { MemoryStore } from './memory.js';
@@ -613,13 +614,16 @@ export function createApp({ log = console.log } = {}) {
   const store = new ChatStore(cfg.store?.maxMessagesPerChat ?? 0);   // 0 = 不限
   const memory = new MemoryStore();
   const sessions = new SessionRegistry(cfg.store?.keepSessionFiles ?? 0, cfg.store?.keepSessionDays ?? 35);   // 0 = 不限
-  const onebot = new OneBotClient({
-    wsUrl: cfg.snowluma?.wsUrl,
-    httpUrl: cfg.snowluma?.httpUrl,
-    accessToken: cfg.snowluma?.accessToken,
-    httpToken: cfg.snowluma?.httpAccessToken || cfg.snowluma?.accessToken,
-    onEvent: (event) => handleOneBotEvent(event).catch((error) => log('[ingest] 处理事件出错:', error?.message ?? error))
-  });
+  // ── 通道框架（v0.8 起）：QQ 是第一个通道，以后 browser/mail/office 走同一条路 ──
+  // manager 负责注册/启停/入站分发/状态上报；`onebot` 仍指 QQ 通道的底层协议
+  // 客户端 —— 既有子系统与测试依赖该引用；出站迁移到 manager.send() 是第二步
+  // （设计见 ZCode 工作区 DESIGN.md / AGENTS.md 通道框架方针）。
+  const channelManager = new ChannelManager({ log });
+  registerBuiltinChannels(channelManager, { config: cfg });
+  channelManager.onInbound((event) => handleOneBotEvent(event).catch((error) => log('[ingest] 处理事件出错:', error?.message ?? error)));
+  channelManager.onStatus((st) => { if (st.channelId === 'qq') emit('onebot-status', st.status); });
+  const qqChannel = channelManager.get('qq');
+  const onebot = qqChannel.client;
   const stickers = new StickerManager(onebot);
   const sender =   new SendQueue({
     onebot, store,
@@ -634,8 +638,7 @@ export function createApp({ log = console.log } = {}) {
   const communitySyncTimer = startCommunitySync(log);
   communitySyncTimer?.unref?.();
 
-  // OneBot 连接状态推送
-  onebot.onStatus((status) => emit('onebot-status', status));
+  // OneBot 连接状态推送改经 channelManager.onStatus（见上方通道框架接线）
 
   // ── 从 SnowLuma 配置自动同步 OneBot 令牌 ──
   // SnowLuma 给每个登录过的账号生成独立随机 token（config/onebot_<uin>.json），
@@ -1652,7 +1655,7 @@ export function createApp({ log = console.log } = {}) {
       onebot.httpUrl = String(c.snowluma?.httpUrl || onebot.httpUrl).replace(/\/+$/, '');
       // accessToken/httpToken 已由 applyTokens 直接挂到实例（候选[0]）
     }
-    await onebot.connect();
+    await channelManager.startAll();   // 通道启停统一入口；QQ 通道内部调 onebot.connect()
 
     // ── OneBot 端口就绪轮询（2026-09-19）────────────────────────────────────
     // WS 3001 只有「QQ 登录 → Hook 检出 → OneBot 实例拉起」后才监听。常见时序：
@@ -1748,7 +1751,7 @@ export function createApp({ log = console.log } = {}) {
       try { c.end(); } catch { /* ignore */ }
     }
     sseClients.clear();
-    onebot.close();
+    await channelManager.stopAll();    // 含 QQ 通道的 onebot.close()；后续新通道一并收尾
     server.close();
     // 内置启动的 SnowLuma：QQ Agent 退出时一并关掉，避免留一个无窗口的后台进程。
     // 注意：SnowLuma 退出时不一定能立刻把 config 落盘，但我们的 stop 不会再去读它，
@@ -1764,7 +1767,7 @@ export function createApp({ log = console.log } = {}) {
     releaseInstanceLock();
   }
 
-  return { server, onebot, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills };
+  return { server, onebot, channelManager, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills };
 }
 
 /**
