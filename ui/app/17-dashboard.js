@@ -26,14 +26,16 @@ function renderDashChannelCard(ch) {
   else { light = 'off'; detail = last.reason ?? '已停止'; }
 
   const channelColor = { qq: 'var(--ch-qq)', browser: 'var(--ch-browser)', mail: 'var(--ch-mail)' }[ch.id] ?? 'var(--tx3)';
+  const channelIcon = { qq: '💬', browser: '🌐', mail: '📧' }[ch.id] ?? '🔌';
   const caps = (ch.capabilities ?? []).slice(0, 4);
   const capNames = { message: '消息', media: '媒体', sticker: '表情', voice: '语音', poke: '互动', history: '历史', control: '操控', verifiedSender: '可信身份' };
 
   return `
     <div class="dash-card" data-tab-jump="channels" style="--ch-color: ${channelColor}">
       <div class="dash-card-head">
-        <span class="status-light ${light}"></span>
+        <span class="dash-ic-chip">${channelIcon}</span>
         <b>${esc(ch.label)}</b>
+        <span class="status-light ${light}"></span>
         <span class="dash-card-sub">${esc(ch.id)}</span>
       </div>
       <div class="dash-card-body">${esc(detail || '—')}</div>
