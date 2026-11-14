@@ -2021,6 +2021,54 @@ span.rail-group:nth-of-type(5) { color: #ff5da2; }   /* 系统 粉 */
 }
 .banner a { color: #52c7e8; }
 .banner.hidden { margin: 0; }
+
+/* ── 设置页去影子（v0.8.0-ui3）：灭掉"文字竖排二级导航"老骨架 ──
+   两栏 → 纵向：顶部横向分段胶囊选域，下方卡片流占满全宽。
+   只动布局与皮肤，不改 06/07 渲染逻辑与 data-section 事件流。 */
+#view-settings { flex-direction: column; overflow-y: auto; }
+#view-settings .settings-sidebar {
+  width: auto; flex: 0 0 auto;
+  flex-direction: row; flex-wrap: wrap; align-items: center;
+  border-right: none; border-bottom: 1px solid var(--bd);
+  background: var(--bg1);
+  padding: 12px 20px; gap: 6px;
+  overflow-y: visible;
+}
+/* 运行状态卡 → 行首渐变描边小徽章 */
+#view-settings .settings-runstate {
+  flex-direction: row; align-items: center; gap: 10px;
+  margin-bottom: 0; padding: 6px 14px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--ac-line);
+  background: var(--ac-soft);
+}
+#view-settings .settings-runstate .rs-title { font-size: 12px; color: var(--ac); }
+#view-settings .settings-runstate .rs-row { margin: 0; }
+#view-settings .settings-menu { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+#view-settings .settings-menu-item, #view-settings .smi {
+  width: auto; padding: 5px 14px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--bd); background: var(--bg2);
+  font-size: 12.5px;
+}
+#view-settings .settings-menu-item:hover, #view-settings .smi:hover {
+  background: var(--hover); border-color: var(--bd2);
+}
+#view-settings .settings-menu-item.active, #view-settings .smi.on {
+  background: var(--grad-accent); color: #fff; border-color: transparent;
+}
+#view-settings .settings-menu-item.egg-hot { margin-top: 0; }
+#view-settings .settings-pane { padding: 22px 28px 48px; }
+
+/* ── 顶栏状态胶囊 → 彩色徽章（青/粉/橙/青柠 按位赋色） ── */
+#top-chips .stat:nth-of-type(1), #top-chips .muted:nth-of-type(1) { border-color: rgba(82, 199, 232, .45); }
+#top-chips .stat:nth-of-type(1) .dot, #top-chips .muted:nth-of-type(1) .dot { background: #52c7e8; }
+#top-chips .stat:nth-of-type(2), #top-chips .muted:nth-of-type(2) { border-color: rgba(255, 93, 162, .45); }
+#top-chips .stat:nth-of-type(2) .dot, #top-chips .muted:nth-of-type(2) .dot { background: #ff5da2; }
+#top-chips .stat:nth-of-type(3), #top-chips .muted:nth-of-type(3) { border-color: rgba(255, 157, 92, .45); }
+#top-chips .stat:nth-of-type(3) .dot, #top-chips .muted:nth-of-type(3) .dot { background: #ff9d5c; }
+#top-chips .stat:nth-of-type(4), #top-chips .muted:nth-of-type(4) { border-color: rgba(163, 230, 53, .45); }
+#top-chips .stat:nth-of-type(4) .dot, #top-chips .muted:nth-of-type(4) .dot { background: #a3e635; }
 .dash-section > .dash-sec-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
