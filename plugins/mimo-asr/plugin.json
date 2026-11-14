@@ -1,0 +1,10 @@
+{
+  "id": "mimo-asr",
+  "name": "语音转文字（MiMo ASR）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "description": "提供 media.transcribe 能力：群友发语音时自动用小米 MiMo ASR 转成文字，转写文本进消息存档，模型就能\"听见\"语音内容。\n\n【工作方式】收到语音消息 → OneBot get_record 取音频（必要时 ffmpeg 转 WAV）→ MiMo ASR 转写。转写失败/未配置时静默回退 [语音] 占位，绝不打断消息入库。\n\n【配置】控制台 → 语音：「听懂语音」开关；服务商用语音区选定的（Key 复用模型 API 的）。",
+  "author": "anshaooo",
+  "capabilities": ["media.transcribe"]
+}

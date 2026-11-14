@@ -1,0 +1,278 @@
+{
+  "id": "comfyui-image",
+  "name": "AI 画图（本机 ComfyUI / 光辉 · Anima）",
+  "version": "4.4.0",
+  "apiVersion": 1,
+  "category": "media",
+  "description": "调用本机 ComfyUI 按描述生成图片并发送到当前会话；中文提示词自动翻译成英文；三种参考图来源（群友在聊天里发的图 / 按角色名取外观参考 / 按关键词取构图参考），**默认只取外观不影响构图**；并可查一份**逐个核对过写法**的提示词标签库（25 类目 / 1100+ 概念）来保证标签写法准确。",
+  "enabledByDefault": true,
+  "permissions": ["web_fetch"],
+  "settings": {
+    "profile": "anima-turbo",
+    "baseUrl": "http://127.0.0.1:8188",
+    "autoStartComfyUI": true,
+    "comfyuiDir": "E:\\ComfyUI",
+    "startupTimeoutSec": 180,
+    "checkpoint": "waiIllustriousSDXL_v140.safetensors",
+    "autoPickCheckpoint": true,
+    "animaUnet": "anima-base-v1.0.safetensors",
+    "animaClip": "qwen_3_06b_base.safetensors",
+    "animaVae": "qwen_image_vae.safetensors",
+    "animaTurboLora": "anima-turbo-lora-v0.2.safetensors",
+    "defaultWidth": 1024,
+    "defaultHeight": 1024,
+    "steps": 0,
+    "cfg": 0,
+    "prependQuality": true,
+    "qualityPrefix": "masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest",
+    "negativePrefix": "",
+    "extraNegative": "loli, child, infant",
+    "autoTranslate": true,
+    "llmBaseUrl": "",
+    "llmModel": "",
+    "autoCharacterCard": true,
+    "tagApiUrl": "https://safebooru.org/index.php",
+    "characterCardSample": 60,
+    "characterCardTop": 16,
+    "timeoutSec": 420,
+    "cooldownSec": 60,
+    "outputDir": "",
+    "maxWidth": 1536,
+    "maxHeight": 1536,
+    "refEnabled": true,
+    "refMode": "appearance",
+    "refAppearanceTags": 12,
+    "refVisionMaxMB": 8,
+    "refRatingSafe": true,
+    "refDenoise": 0.6,
+    "refSearchCount": 6,
+    "refMinShortSide": 512,
+    "refSearchTimeoutSec": 40,
+    "promptLibraryAuto": false,
+    "promptLibraryMaxTags": 8
+  },
+  "configSchema": {
+    "profile": {
+      "type": "enum",
+      "label": "用哪个模型",
+      "description": "anima-turbo（默认，推荐）= Anima + 官方 turbo LoRA，8 步，约 18 秒一张，聊天场景最快最好看；anima = Anima 画质模式，30 步 CFG 4，约 90 秒，细节更足；illustrious = 光辉 WAI-illustrious v14（SDXL 单文件），28 步，约 45 秒。",
+      "values": ["anima-turbo", "anima", "illustrious"]
+    },
+    "baseUrl": {
+      "type": "string",
+      "label": "ComfyUI 地址",
+      "description": "本机 ComfyUI 的地址，默认 http://127.0.0.1:8188（和启动脚本里的端口一致）。要连别的机器就改成那台的 IP。"
+    },
+    "autoStartComfyUI": {
+      "type": "boolean",
+      "label": "ComfyUI 没开时自动拉起",
+      "description": "开着（默认）：要画图时发现 ComfyUI 没在跑，就自动在后台把它启动起来再画（无窗口，日志写 data/logs/comfyui.log）。关掉则直接回一句「请先启动 ComfyUI」。"
+    },
+    "comfyuiDir": {
+      "type": "string",
+      "label": "ComfyUI 安装目录（自动拉起用）",
+      "description": "默认 E:\\ComfyUI，即本机部署的根目录（里面应有 venv\\ 和 ComfyUI\\ 两个子目录）。只有开着「自动拉起」时才用到。"
+    },
+    "startupTimeoutSec": {
+      "type": "number",
+      "label": "自动拉起等待上限（秒）",
+      "description": "默认 180。ComfyUI 冷启动 + 初始化大约 15~40 秒，首次加载模型更久，留足余量。"
+    },
+    "checkpoint": {
+      "type": "string",
+      "label": "光辉大模型文件名",
+      "description": "只在「用哪个模型」选 illustrious 时生效。默认是光辉 WAI-illustrious v14，需与 ComfyUI 的 models/checkpoints 里一致。"
+    },
+    "autoPickCheckpoint": {
+      "type": "boolean",
+      "label": "找不到就自动挑一个",
+      "description": "开着（默认）：上面填的模型不存在时，自动改用 ComfyUI 里可用的那个。关掉则明确报错并列出可用模型。"
+    },
+    "animaUnet": {
+      "type": "string",
+      "label": "Anima 扩散模型文件名",
+      "description": "Anima 档位用。默认 anima-base-v1.0.safetensors，放在 models\\diffusion_models\\。"
+    },
+    "animaClip": {
+      "type": "string",
+      "label": "Anima 文本编码器文件名",
+      "description": "Anima 档位用。默认 qwen_3_06b_base.safetensors（Qwen3 0.6B），放在 models\\text_encoders\\。"
+    },
+    "animaVae": {
+      "type": "string",
+      "label": "Anima VAE 文件名",
+      "description": "Anima 档位用。默认 qwen_image_vae.safetensors，放在 models\\vae\\。"
+    },
+    "animaTurboLora": {
+      "type": "string",
+      "label": "Anima Turbo LoRA 文件名",
+      "description": "只在选 anima-turbo 时生效。默认 anima-turbo-lora-v0.2.safetensors，放在 models\\loras\\。官方加速 LoRA，把步数压到 8 步。"
+    },
+    "defaultWidth": {
+      "type": "number",
+      "label": "默认宽（像素）",
+      "description": "机器人没指定尺寸时用。两个模型都建议 1024；竖图 832、横图 1216 也都是训练过的尺寸。"
+    },
+    "defaultHeight": {
+      "type": "number",
+      "label": "默认高（像素）",
+      "description": "同上。1024x1024 最稳，竖图用 832x1216，横图用 1216x832。"
+    },
+    "steps": {
+      "type": "number",
+      "label": "采样步数（0 = 用官方推荐）",
+      "description": "默认 0，即跟随档位：Anima 极速 8 / Anima 画质 30 / 光辉 28。填了数字则强制覆盖。"
+    },
+    "cfg": {
+      "type": "number",
+      "label": "CFG 提示词强度（0 = 用官方推荐）",
+      "description": "默认 0，即跟随档位：Anima 极速 1 / Anima 画质 4 / 光辉 5。⚠️ Anima 极速档的 CFG=1 等于关掉负向引导，此时负面词不生效。"
+    },
+    "prependQuality": {
+      "type": "boolean",
+      "label": "自动补质量词（仅光辉档）",
+      "description": "开着（默认）：光辉档每次自动在提示词前加质量词。Anima 档不使用质量词（官方不需要，加了反而干扰），此开关对它无效。"
+    },
+    "qualityPrefix": {
+      "type": "string",
+      "label": "质量词（仅光辉档）",
+      "description": "光辉 / Illustrious 系推荐的质量词串，会自动加在提示词前面。Anima 档不使用。"
+    },
+    "negativePrefix": {
+      "type": "string",
+      "label": "负面词（留空 = 用官方推荐）",
+      "description": "留空（默认）时按档位用官方负面词。填了则完全覆盖。"
+    },
+    "extraNegative": {
+      "type": "string",
+      "label": "额外负面词（安全兜底）",
+      "description": "默认加入 loli, child, infant 作为群聊安全兜底。清空即可取消。⚠️ Anima 极速档 CFG=1，负面词不生效，要它真正起作用请用 anima 或 illustrious 档。"
+    },
+    "autoTranslate": {
+      "type": "boolean",
+      "label": "中文自动翻译成英文",
+      "description": "开着（默认）：提示词里有中文时，技能自动调用 QQ Agent 自己配的那个 LLM（读 data/config.json）翻成英文出图提示词，群友直接用中文说就行，不需要模型自己改写。关掉则中文会被退回。"
+    },
+    "llmBaseUrl": {
+      "type": "string",
+      "label": "翻译用 LLM 地址（留空 = 用 QQ Agent 自带的）",
+      "description": "留空（默认）就用 data/config.json 里 api.baseUrl 那个端点。填了则只用于翻译，不影响 QQ Agent 本身。"
+    },
+    "llmModel": {
+      "type": "string",
+      "label": "翻译用模型名（留空 = 用 QQ Agent 自带的）",
+      "description": "留空（默认）用 data/config.json 里 api.model，本机是 deepseek-flash。翻译用便宜快的模型就够了。"
+    },
+    "autoCharacterCard": {
+      "type": "boolean",
+      "label": "自动补角色外观标签",
+      "description": "开着（默认）：提示词里出现能认出来的角色标签时（如 hatsune_miku），自动联网查该角色的样本图，把发色/瞳色/发型这类**外观标签**补进去，保证角色画得像。只补外观、不补服装（服装可能和群友的要求打架）。"
+    },
+    "tagApiUrl": {
+      "type": "string",
+      "label": "标签库地址",
+      "description": "默认 https://safebooru.org/index.php。本机实测 danbooru.donmai.us 和 gelbooru.com 都不通，safebooru 通且是同一套 danbooru 标签体系。换镜像改这里即可。"
+    },
+    "characterCardSample": {
+      "type": "number",
+      "label": "角色卡取样张数",
+      "description": "默认 60。抓这个角色多少张样本图来统计高频标签。调大更准但更慢，10~100。"
+    },
+    "characterCardTop": {
+      "type": "number",
+      "label": "角色卡返回标签数",
+      "description": "默认 16。查角色卡时返回出现频率最高的前 N 个标签，5~40。"
+    },
+    "timeoutSec": {
+      "type": "number",
+      "label": "单张超时（秒）",
+      "description": "默认 420。Anima 极速约 18 秒、画质约 90 秒、光辉约 45 秒，首次加载模型更久，留足余量。"
+    },
+    "cooldownSec": {
+      "type": "number",
+      "label": "同一会话冷却（秒）",
+      "description": "默认 60。防止群里连点导致显卡排队卡死，也顺便防刷屏。填 0 = 不限。"
+    },
+    "outputDir": {
+      "type": "string",
+      "label": "本地留档目录",
+      "description": "生成的图会先落到本机再发给 QQ。留空 = 用 data/comfyui-images/。"
+    },
+    "maxWidth": {
+      "type": "number",
+      "label": "宽上限（像素）",
+      "description": "默认 1536。6GB 显存的安全边界，超过容易 OOM。"
+    },
+    "maxHeight": {
+      "type": "number",
+      "label": "高上限（像素）",
+      "description": "默认 1536。同上。"
+    },
+    "refEnabled": {
+      "type": "boolean",
+      "label": "允许用参考图重绘（img2img）",
+      "description": "开着（默认）：群友要「照着某张图」「同款构图」时，技能先用「智能配图」找一张真实图片当底图，再按设定的重绘幅度重画（img2img），构图和姿势会跟着参考图走，比纯文字准得多。关掉则永远只按文字画。\n\n⚠️ 这个功能依赖「智能配图」技能提供找图能力；没装/没开时本技能自动退回纯文字画图，不会报错。"
+    },
+    "refMode": {
+      "type": "enum",
+      "label": "参考图怎么用",
+      "description": "**appearance（默认）= 只取外观**：把参考图交给视觉模型，提取发型/发色/瞳色/配饰/服装这类**外观标签**写进提示词，然后走**纯文生图** —— 构图、姿势、机位、背景 100% 由描述决定，参考图**完全不影响构图**。\n\ncomposition = 旧行为：img2img 按参考图重绘，构图和姿势会跟着参考图走（这时「参考图重绘幅度」才生效）。\n\n**为什么默认是 appearance**：img2img **必然**带走参考图的构图 —— 那是它的工作原理（latent 由参考图 VAE 编码而来），不是 denoise 没调好。群友发一张图说「画成这样的」时，通常要的是**外观像**，而不是**照抄这张的构图**。真要照抄构图就切 composition。\n\n⚠️ appearance 需要 QQ Agent 的「视觉」功能可用（api.vision 开着、visionModel 能读图）。不可用时技能会**降级成不用参考图**并说明原因，**绝不会偷偷退回 img2img**（那会违背「不影响构图」这个承诺）。",
+      "values": ["appearance", "composition"]
+    },
+    "refAppearanceTags": {
+      "type": "number",
+      "label": "外观标签最多取几个",
+      "description": "默认 12。「只取外观」模式下从参考图里提取多少个标签。调大更细，但也更容易混进无关描述，3~30。\n\n提取完还有一层**硬过滤**：构图/姿势/表情/道具/背景类标签会被无条件剔除 —— 不指望视觉模型每次都听话。"
+    },
+    "refVisionMaxMB": {
+      "type": "number",
+      "label": "外观提取的图片大小上限（MB）",
+      "description": "默认 8。超过这个体积的参考图不发给视觉模型（base64 会让请求体再涨约 1/3），直接说明原因并跳过外观提取。\n\n实测 4.2MB 的原图能正常处理（HTTP 200、2.7 秒、约 1077 prompt token），所以正常截图/插画都够用。"
+    },
+    "promptLibraryAuto": {
+      "type": "boolean",
+      "label": "自动从提示词库补标签",
+      "description": "默认**关**。开着时：提示词里出现了提示词库收录的中文概念（如「雨天」「水手服」「逆光」），就自动把该概念的**准确写法**补进去 —— 光辉档补 danbooru 标签，Anima 档补自然语言短语（按档位选形态，加错了反而有害）。\n\n为什么默认关：这是**确定性的字符串匹配**（用户原话里出现「雨天」就命中），不做语义理解，也不区分否定句（「不要雨天」也会命中）。它会改写你写的提示词，而这可能是你不想要的 —— 所以默认让模型**按需调用**「查提示词标签库」工具，而不是每次都自动补。\n\n想让它每次都自动兜底，再打开这个开关。"
+    },
+    "promptLibraryMaxTags": {
+      "type": "number",
+      "label": "自动补标签的上限（个）",
+      "description": "默认 8。上面那个开关打开时，一次最多补多少个标签，避免把提示词塞爆。只在自动模式下生效；模型主动查库时不受这个限制。"
+    },
+    "refRatingSafe": {
+      "type": "boolean",
+      "label": "角色参考图只取 safe 级（强烈建议保持开启）",
+      "description": "开着（默认，**强烈建议**）：查角色外观参考图时强制加 `rating:safe` 过滤，只挑安全级作品。\n\n为什么默认必须开：标签库的**默认返回流被 questionable 淹没了** —— 实测搜 hatsune_miku 前 40 张里 39 张是 q 级。群里的机器人不做过滤随便挑一张，很可能直接发出不当内容。\n\n⚠️ 注意 safebooru 的 dapi 用的是 `rating:safe`（gelbooru 写法），**不认** `rating:general`（实测那个写法等于没过滤）。safebooru 上没有 explicit 级内容（实测 `rating:explicit` 返回 0 条）。\n\n关掉的后果自负：会从 q 级作品里挑，画群里基本不能用。若某个角色的 safe 级作品太少导致找不到图，技能会**降级成纯文字画图**并说明原因，不会偷偷用 q 级的来凑。"
+    },
+    "refDenoise": {
+      "type": "number",
+      "label": "参考图重绘幅度",
+      "description": "默认 0.6。范围 0.2~0.95。**数字越小越像参考图**：0.3 左右几乎照抄构图只换画风；0.6 保留大致布局但自由发挥；0.8 以上只借个大概意思。调 0.95 接近纯文字画图（也就不用参考图了）。群友如果抱怨「画得不像我给的图」就往下调。"
+    },
+    "refSearchCount": {
+      "type": "number",
+      "label": "参考图候选张数",
+      "description": "默认 6。让「智能配图」一次返回几张候选，技能从里面挑**分辨率最高**的那张当底图。调大更可能挑到高清图但找图更慢，1~12。"
+    },
+    "refMinShortSide": {
+      "type": "number",
+      "label": "参考图最小短边（像素）",
+      "description": "默认 512。低于这个尺寸的候选会被优先排除 —— img2img 里参考图太小会直接糊掉，重绘幅度再低也救不回细节。一个候选都不达标时会自动放宽（并在日志里提示），不会因为太严格导致找不到图。"
+    },
+    "refSearchTimeoutSec": {
+      "type": "number",
+      "label": "找参考图超时（秒）",
+      "description": "默认 40。找图是「智能配图」的多图源引擎在做，偶尔会慢；超过这个时间就放弃参考图、退回纯文字画图，避免把一次对话轮次拖死。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "comfyui-draw-note",
+        "title": "用本机 ComfyUI 画图",
+        "priority": 40,
+        "content": "群友让你画图/生成图片/来一张某某的图，或说「画一个……」「帮我画……」时，调用 comfyui-image__draw（本机出图，默认档位约 18 秒一张）。\n\n**中文可以直接写进 prompt**，技能会自动翻译成英文（要 1~2 秒）。不需要你自己翻。\n\n### 拿不准写法时，先查提示词标签库\n`comfyui-image__prompt_tags` 是一份**逐个核对过写法**的概念库（25 个类目 / 1100+ 概念），覆盖：质量词、构图、视角镜头、表情、姿势、身体特征、发型、发色、眼睛、各类服装（校服/传统/日常/礼服/泳装）、配饰、场景地点、天气时间、光线、画风、特效、情绪、物件道具、动物、负面词。\n\n**什么时候该查**：\n- 群友的要求里有具体视觉概念，而你不确定英文怎么写或标签怎么写（「逆光」「丁达尔效应」「公主切」「水手服领结」这类）\n- 想确认某个标签的**正确写法** —— 凭记忆写错写法等于白写，因为模型不认识那个词\n- 想给画面加某种氛围/光效/画风，但不知道对应的说法\n\n**怎么用**：`prompt_tags(query=\"雨天\")`，或按类目 `prompt_tags(category=\"lighting\")`；不传参数会列出全部类目。\n\n**返回两种产出，按当前档位抄对应的那个**：\n- `标签` → 给光辉/Illustrious 档用（标签串）\n- `自然语言` → 给 Anima 档用（本机默认档位就是它，直接抄那句英文描述）\n\n结果里标 `✓` 的标签表示**已核对过标签库、写法可靠**；标「提示词约定类」的（质量词/负面词）标签库不收录这类词，但那是模型官方推荐的写法。\n\n### 参考图默认只影响外观，不影响构图\n传了任何参考图（`ref_message_id` / `ref_recent_image` / `ref_character` / `ref_keyword`）时，**默认只从图里提取外观标签**（发型/发色/瞳色/配饰/服装），然后走**纯文生图** ——\n**构图、姿势、机位、背景完全由你的 prompt 决定**，参考图不会把自己的构图带过来。\n\n所以「用这张图里人物的外观，画一个她坐着看书的场景」这种要求现在是能正确实现的：**外观像，姿势是你说的那个**。\n\n只有群友**明确要求照抄构图/姿势**时，才传 `ref_mode: \"composition\"`（例如「照这张的姿势画」「同款机位」「就按这个构图，把人物换掉」）。\n\n### 群友自己发了图 → 传 ref_message_id（最准的参考）\n群友发了张图、或者**引用着**某张图说「照着这个画」「画成这样的」「同款」「这个风格」时，把**那条消息的 #数字**填进 ref_message_id。\n这是三种参考来源里**最准的** —— 就是群友本人给的那张图，比任何搜索、任何文字描述都准。\n- #数字 就是聊天记录里每条消息前面的那个号（【未读信息】和 get_recent_messages 里都有）\n- **只能填聊天记录里真实出现过的 #数字，不要自己编**\n- 拿不准是哪条、或者懒得翻 id → 传 `ref_recent_image: true`，用会话里最近一张群友发的图\n- 有群友自己发的图时**优先用它**，不要退回 ref_keyword —— 群友说的「这张」就是他发的那张\n- 例外：如果那图是**表情包/梗图**，当参考图会带出奇怪构图，这种情况改用 ref_keyword 或纯文字画\n\n### 画具体角色时：查角色卡 + 传 ref_character\n群友点名要画某个**具体角色**（初音未来、雷姆、芙莉莲、原神角色…）时，做两件事：\n\n1. **调用 comfyui-image__find_character_tags** 拿这个角色的标准标签和「角色卡」（该角色高频共现的标签，比如初音是 twintails / aqua_hair / aqua_eyes），把这些标签和群友要的场景拼进 draw 的 prompt。\n2. **给 draw 传 ref_character = 角色名**。技能会去标签库找一张**确实是这个角色**的图当底图重绘，并自动把标准标签和外观标签补进 prompt —— 参考图和标签双重保证。\n\n**只要群友点名了具体角色，就应该传 ref_character。** 只靠文字标签容易画成「像但不是」；有了角色本人的图当底图，发色/瞳色/发型才对得上。\n这比自己凭记忆写标签准得多——角色的发型发色瞳色标错了，画出来就不是那个角色。\n\n### 三种参考来源怎么选\n| 群友的情况 | 该传 |\n|---|---|\n| 发了张图说「照着这个画」 | `ref_message_id:` 那条消息的 #数字（**最准**） |\n| 引用着某张图说「画成这样的」 | `ref_message_id:`，或 `ref_recent_image: true` |\n| 「画个初音未来在教室里喝奶茶」 | `ref_character: \"初音未来\"`（要角色本人像） |\n| 「照着樱花树下那种感觉画」 | `ref_keyword: \"樱花树下少女\"`（要的是构图/氛围） |\n| 「画个初音未来，同款樱花构图」 | `ref_character` + `ref_keyword` 都传 |\n\n优先级：`ref_file` > `ref_message_id`/`ref_recent_image` > `ref_character` > `ref_keyword`。\n传了多个时只有优先级最高的那个会**当底图**，但 `ref_character` 的**标准标签仍会注入 prompt** ——\n所以「用群友发的图 + 同时点名角色」是有效的组合（图用群友的，外观标签照样补）。\n\n注意：传了参考图后**构图/姿势会跟着参考图走**（这是 img2img 的固有特性）。\n所以「画初音未来**坐在教室里**」这种群友指定了新姿势的场景，参考图仍然有用（保证长得像），\n但姿势可能被参考图带跑；如果群友明确要某个姿势，就把姿势写清楚在 prompt 里，并适当提高 ref_denoise。\n\n### 查不到怎么办\nfind_character_tags 说找不到时，用你自己的 **web_search** 搜「<角色名> danbooru tags」或「<角色名> 提示词」，拿到确切标签再写进 draw 的 prompt（英文）。\n\n### 群友要「照着某张图」「同款构图」时：传 ref_keyword\n群友说「照着这张画」「要那种构图」「同款姿势」「这个机位」时，把参考物的**关键词**填进 ref_keyword。技能会自己找一张真实图片当底图重绘（img2img），构图和姿势会跟着参考图走，比纯文字准得多。\n- 群友只说「照那种感觉」→ 不填 ref_denoise，用设置里的默认值（约 0.6）\n- 群友说「就要这张的感觉」→ 传 ref_denoise 0.35~0.5（**更贴参考图**）\n- 群友说「参考一下但换个场景」→ 传 ref_denoise 0.65~0.8（**更自由**）\n- **普通「画一个…」绝对不要填 ref_keyword** —— 那会白白限制发挥，纯文字画反而更好\n- 用了参考图且没传 size 时，尺寸会按参考图比例自动算，竖图横图都不会被压扁\n- 参考图是**由「智能配图」找的网图**，可能和群友心里想的那张不一样；发图后照旧不要描述画面，如果对方说「不是这张」，换更具体的关键词再调一次即可\n\n### 其他\n- 质量词由工具自动补，你不用写\n- 尺寸不指定就用 1024x1024；要竖图（全身像）可传 832x1216\n- 出图要十几秒到一分多钟，调用前可以先说一句「在画了，等一下」，别让群里干等\n- 图发出去之后**不要再描述图片内容**（群友自己看得见）"
+      }
+    ]
+  }
+}

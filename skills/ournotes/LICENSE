@@ -1,0 +1,30 @@
+MIT License
+
+Copyright (c) 2026 Adeliae (Bilibili @Adeliae)
+  —— 上游项目 NeriWST/ournotes-qq-bot
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+本目录（QQ Agent 技能 ournotes）是上面那个项目的 JavaScript 移植版：
+查询逻辑、别名表、等级语义等来自上游 Python 实现，数据同样取自
+社区主数据源 metadata.bdon.moe。按其 MIT 许可分发，需保留上述版权与许可声明。
+
+分发时请把本文件一并放进 ournotes/ 目录。

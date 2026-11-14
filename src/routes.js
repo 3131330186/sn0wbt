@@ -1,0 +1,2011 @@
+// API 路由表：把 handleHttp 的巨型 if-else 链拆成声明式路由。
+//
+// 每个路由：{ method, pattern, handler }
+//   - method: 'GET' | 'POST' | 'PUT' | 'DELETE' | '*'（'*' 匹配任意方法）
+//   - pattern: 字符串（精确匹配）或 RegExp（exec 捕获组传给 handler）
+//   - handler: async (ctx) => 结果
+//       ctx = { req, res, url, pathname, method, match, body?, ...deps }
+//       handler 返回 undefined 表示"已自行写响应"（如 SSE）；否则框架统一 json() 返回。
+//
+// 依赖（store/memory/sessions/onebot/orchestrator/…）通过 createRoutes(deps) 注入，
+// 路由 handler 通过闭包取用，避免在 app.js 里反复传参。
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from './config.js';
+import { getVoiceCallSession, recentVoiceTurns, resetVoiceCallSession, playCallTestTone } from './voice-call/runtime.js';
+import { listRenderEndpoints } from './voice-call/audio-devices.js';
+import { customSearch } from './web-search.js';
+import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate } from './llm.js';
+import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
+import {
+  currentProviders, setProviderKey, testAllProviders, testOneProvider,
+  testModelChat, fetchModelsFrom, upsertProvider, addModelsToProvider, removeModelFromProvider, removeProvider
+} from './providers.js';
+import { scanModelsVision, visionResults, modelImageVerdict } from './vision-scan.js';
+import { builtinVisionResults } from './model-vision-docs.js';
+import { todayKey } from './util.js';
+import { logger } from './logger.js';
+import { skillManager } from './skills/manager.js';
+import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds } from './skills/config.js';
+// 扩展目录根（skills/、plugins/）：删除技能/插件时用来校验"只能删根的直接子目录"。
+// 从 plugin-loader 取而不是自己拼 APP_ROOT：打包版与测试（环境变量覆盖目录）
+// 都走同一份解析结果，否则测试里会判到真实仓库目录上。
+import { SKILL_DIRS } from './plugin-loader.js';
+import { resolveDeletableExtensionDir, removeExtensionDir } from './skills/delete-dir.js';
+import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
+import { deviceManager } from './device/manager.js';
+import { invalidateAdbCache } from './device/adb.js';
+import { BUILTIN_BLOCKLIST } from './device/manager.js';
+import { synthesize as synthesizeSpeech, resolveSpeechEndpoint, readCloneRef, CLONE_REF_DIR, sniffAudioExt, convertRefToWav } from './speech/tts.js';
+import { resolveAdapter, ADAPTERS, FORMAT_IDS, capabilitiesText } from './speech/adapters/index.js';
+import { singingEnabled, getSingingEngine } from './speech/singing.js';
+import { safeFetchBinary, browseLockState } from './safe-fetch.js';
+import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
+import { detectDialect as detectThinkingDialect } from './thinking.js';
+
+/**
+ * 构建路由表。
+ * @param {object} deps 依赖注入
+ */
+export function createRoutes(deps) {
+  const {
+    store, memory, sessions, onebot, orchestrator,
+    emit, log,
+    // app.js 内部的过程/状态
+    localVersion,
+    sanitizeConfig, keyEndpointAllowed, sanitizeProvider,
+    readBody, authorize,
+    snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaStatus, snowlumaLogs,
+    launchSnowluma, stopSnowluma,
+    qqPortableStatus, qqPortableLogs, launchPortableQQ, stopPortableQQ,
+    visionScan,
+    buildUsageStats, buildUsageBreakdown,
+    reloadSkills,
+    applyListenHost
+  } = deps;
+
+  // 网页对话的虚拟会话 key：web 不是合法 QQ 号（纯数字），永不与真实私聊撞名。
+  const WEB_CHAT_KEY = 'private:web';
+
+  // 小工具：读请求体（容错：没 body 当空对象）。
+  // 但 readBody 明确标记的可暴露错误（400 非法 JSON / 413 过大）必须透传，
+  // 否则会从"应返回 400"退化成静默当成空 patch。
+  const bodyOf = (req) => readBody(req).catch((e) => { if (e?.expose) throw e; return {}; });
+
+  /**
+   * Skill 可用性判断的运行期上下文。
+   * 必须和 orchestrator 用同一份输入，否则会出现
+   * "设置页说可用、运行时空工具列表"的口径分裂。
+   */
+  const skillRuntimeContext = () => {
+    const cfg = getConfig();
+    return {
+      skills: skillManager,
+      toolsCfg: cfg.tools || {},
+      // 与 orchestrator 同款判定：vision 开关开着，且当前模型没有被
+      // 视觉扫描判定为 no-vision（曾经只看前半项，模型不支持时
+      // 设置页仍显示视觉工具可用，运行时却剔除）
+      visionEnabled: cfg.api?.vision !== false
+        && modelImageVerdict(cfg.api?.provider, cfg.api?.model) !== 'no-vision',
+      searchEnabled: cfg.webSearch?.enabled !== false,
+      runtimeContext: {
+        model: cfg.api?.model || '',
+        provider: cfg.api?.provider || '',
+        source: 'api'
+      }
+    };
+  };
+
+  return [
+    // ── 状态 / 数据目录 / 重置 ─────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/status',
+      handler: async ({ res, json }) => {
+        const dayKey = todayKey();
+        const usage = sessions.todayUsage(dayKey);
+        const cfgNow = getConfig();
+        const cost = estimateCost(usage, { model: cfgNow.api?.model });
+        // ┚ SnowLuma 运行判定用 WebUI 端口（进程即起即听）。
+        // WS 3001 要等账号登录后才监听，用它判"运行中"会把"起了但未登录"
+        // 误报成"未运行"（进而触发二次拉起 → 双实例管道冲突）。
+        const webuiPort = deps.snowlumaWebuiPort();
+        // 两个端口探测并行：串行时最坏 1.6s（各 800ms 超时），/api/status 每次都卡这么久
+        const [slRunning, obPortOpen] = await Promise.all([
+          deps.isPortOpen('127.0.0.1', webuiPort),
+          deps.isPortOpen('127.0.0.1', snowlumaWsPort())
+        ]);
+        // 诊断：把"连不上"拆成三种用户能看懂的原因（给 UI 就绪度体检用）。
+        let onebotDiagnosis = '';
+        if (!onebot.connected) {
+          if (!slRunning) onebotDiagnosis = 'SnowLuma 未运行：请到 SnowLuma 页签启动';
+          else if (!obPortOpen) onebotDiagnosis = 'SnowLuma 已运行但无账号登录：请在 QQ 里完成登录（登录后数秒内会自动连上）';
+          else if (String(onebot.lastConnectError || '').includes('401')) onebotDiagnosis = '访问令牌不匹配：正在自动轮换重试，若持续出现请在设置里核对 OneBot 令牌';
+          else onebotDiagnosis = onebot.lastConnectError ? `连接失败：${String(onebot.lastConnectError).slice(0, 120)}` : '连接中…';
+        }
+        return json(res, 200, {
+          onebot: {
+            connected: onebot.connected,
+            everConnected: onebot.everConnected,
+            error: onebot.lastConnectError,
+            diagnosis: onebotDiagnosis,
+            self: onebot.selfInfo ? { userId: onebot.selfId, nickname: onebot.selfNickname } : null
+          },
+          snowluma: {
+            dir: snowlumaDir(),
+            running: slRunning,
+            webuiUrl: snowlumaWebuiUrl(),
+            ...snowlumaStatus()
+          },
+          qqPortable: await qqPortableStatus(),
+          orchestrator: orchestrator.statusSummary(),
+          usage,
+          cost,
+          cacheHitRate: cacheHitRate(usage),
+          webSearchCount: usage.webSearchCount || 0,
+          paused: orchestrator.paused,
+          pauseReason: orchestrator.pauseReason ?? null,
+          dataDir: DATA_DIR
+        });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/open-data-dir',
+      handler: async ({ res, json }) => {
+        try {
+          spawn('explorer.exe', [DATA_DIR], { detached: true, stdio: 'ignore' }).unref();
+          return json(res, 200, { ok: true, dir: DATA_DIR });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/reset-data',
+      handler: async ({ res, json }) => {
+        try {
+          // 安全闸：只允许重置"看起来确实是数据目录"的路径。
+          // QQ_AGENT_DATA_DIR 被误设成 C:\ 或用户目录时，无闸直接 rmSync 就是删盘。
+          const resolved = path.resolve(DATA_DIR);
+          const looksLikeDataDir = path.basename(resolved).toLowerCase().startsWith('data')
+            || fs.existsSync(path.join(resolved, 'config.json'));
+          if (!looksLikeDataDir || resolved === path.parse(resolved).root) {
+            return json(res, 400, { ok: false, error: `数据目录不像 QQ Agent 数据目录，已拒绝重置：${resolved}` });
+          }
+
+          await orchestrator.abortAll();
+          onebot.close();
+
+          // 删前先备份：同级带时间戳的副本，出问题还能捞回来；备份失败则中止重置。
+          let backupDir = '';
+          try {
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            backupDir = `${resolved}.backup-${stamp}`;
+            fs.cpSync(resolved, backupDir, { recursive: true, force: true });
+          } catch (error) {
+            return json(res, 500, { ok: false, error: `备份失败，已中止重置：${String(error?.message ?? error)}` });
+          }
+
+          // 只清内容，不删目录本身（目录可能被占用/是挂载点）；
+          // 跳过 qq-agent.lock —— 那是本进程活着的凭证，删了会让第二个实例误判无锁启动。
+          for (const name of fs.readdirSync(resolved)) {
+            if (name === 'qq-agent.lock') continue;
+            fs.rmSync(path.join(resolved, name), { recursive: true, force: true });
+          }
+          const { loadConfig } = await import('./config.js');
+          updateConfig(loadConfig());
+          return json(res, 200, { ok: true, backupDir, message: `已重置为初始形态（原数据已备份到 ${backupDir}），请重启应用` });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    // ── 成本看板 ─────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/usage/stats',
+      handler: async ({ res, json, url }) => {
+        try {
+          const raw = String(url.searchParams.get('range') || url.searchParams.get('days') || '7');
+          const stats = await buildUsageStats({ range: raw });
+          return json(res, 200, { ok: true, range: raw, ...stats });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/usage/breakdown',
+      handler: async ({ res, json, url }) => {
+        try {
+          const raw = String(url.searchParams.get('range') || '7');
+          const dim = String(url.searchParams.get('dim') || '');
+          const key = String(url.searchParams.get('key') || '');
+          const by = String(url.searchParams.get('by') || '');
+          const r = await buildUsageBreakdown({ range: raw, dim, key, by });
+          return json(res, 200, { ok: true, ...r });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    // ── 价格表 ───────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/model-prices',
+      handler: async ({ res, json, url }) => json(res, 200, {
+        prices: listOfficialPrices(),
+        current: resolveOfficialPrice(String(url.searchParams.get('model') || getConfig().api?.model || ''))
+      })
+    },
+
+    // ── SnowLuma 进程管理 ────────────────────────────────────────────
+    {
+      method: 'POST', pattern: '/api/snowluma/launch',
+      handler: async ({ res, json }) => {
+        try {
+          const result = await launchSnowluma();
+          return json(res, result.ok ? 200 : 400, result);
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/snowluma/logs',
+      handler: async ({ res, json }) => json(res, 200, { logs: snowlumaLogs.slice(-200) })
+    },
+    {
+      method: 'POST', pattern: '/api/snowluma/stop',
+      handler: async ({ res, json }) => {
+        try {
+          const stopped = stopSnowluma();
+          return json(res, 200, { ok: true, stopped, embedded: snowlumaStatus().embedded, pid: snowlumaStatus().pid });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/snowluma/open-folder',
+      handler: async ({ res, json }) => {
+        const dir = snowlumaDir();
+        if (!dir) return json(res, 400, { ok: false, error: '找不到 SnowLuma 目录' });
+        spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/snowluma/open-webui',
+      handler: async ({ res, json }) => {
+        const webuiUrl = snowlumaWebuiUrl();
+        if (!webuiUrl) return json(res, 400, { ok: false, error: '没有找到 SnowLuma WebUI 地址（等日志出现 listening 后再试）' });
+        spawn('cmd.exe', ['/c', 'start', '', webuiUrl], { detached: true, stdio: 'ignore' }).unref();
+        return json(res, 200, { ok: true, webuiUrl });
+      }
+    },
+
+    // ── 便携 QQ 进程管理 ─────────────────────────────────────────────
+    {
+      method: 'POST', pattern: '/api/qq-portable/launch',
+      handler: async ({ res, json }) => {
+        try {
+          const result = await launchPortableQQ();
+          return json(res, result.ok ? 200 : 400, result);
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/qq-portable/stop',
+      handler: async ({ res, json }) => {
+        try {
+          const result = await stopPortableQQ();
+          return json(res, result.ok ? 200 : 400, result);
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/qq-portable/logs',
+      handler: async ({ res, json }) => json(res, 200, { logs: qqPortableLogs.slice(-200) })
+    },
+    {
+      method: 'GET', pattern: '/api/qq-portable/status',
+      handler: async ({ res, json }) => json(res, 200, await qqPortableStatus())
+    },
+
+    // ── 体检 / 引导 ──────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/onebot/groups',
+      handler: async ({ res, json }) => {
+        try {
+          const list = await onebot.call('get_group_list');
+          const groups = (Array.isArray(list) ? list : (list?.data ?? []))
+            .map((g) => ({ id: String(g.group_id), name: String(g.group_name ?? g.group_id) }));
+          return json(res, 200, { groups });
+        } catch (error) {
+          return json(res, 502, { error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/onebot/friends',
+      handler: async ({ res, json }) => {
+        try {
+          const list = await onebot.call('get_friend_list');
+          const friends = (Array.isArray(list) ? list : (list?.data ?? []))
+            .map((f) => ({ id: String(f.user_id), name: String(f.remark || f.nickname || f.user_id) }));
+          return json(res, 200, { friends });
+        } catch (error) {
+          return json(res, 502, { error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    // ── 人设模板 ─────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/persona-templates',
+      handler: async ({ res, json }) => {
+        const { PERSONAS } = await import('./personas.js');
+        const builtins = Object.entries(PERSONAS).map(([id, p]) => ({ id, name: p.name, text: p.text, builtin: true }));
+        const customs = (getConfig().customPersonas || []).map((p, i) => ({
+          id: `custom_${i}`, name: p.name, text: p.text, customRules: p.customRules || '', builtin: false
+        }));
+        return json(res, 200, { templates: [...builtins, ...customs] });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/persona-templates',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const name = String(body.name ?? '').trim().slice(0, 50);
+        const text = String(body.text ?? '').trim();
+        if (!name || !text) return json(res, 400, { ok: false, error: '人设名称和角色设定都不能为空' });
+        const entry = { name, text };
+        if (String(body.customRules ?? '').trim()) entry.customRules = String(body.customRules).trim();
+        const next = [...(getConfig().customPersonas || []), entry];
+        updateConfig({ customPersonas: next });
+        return json(res, 200, { ok: true, templates: next });
+      }
+    },
+    {
+      method: 'DELETE', pattern: /^\/api\/persona-templates\/(custom_\d+)$/,
+      handler: async ({ res, json, match }) => {
+        const idx = Number(match[1].replace('custom_', ''));
+        const next = (getConfig().customPersonas || []).filter((_, i) => i !== idx);
+        updateConfig({ customPersonas: next });
+        return json(res, 200, { ok: true });
+      }
+    },
+
+    // ── 多提供商模型目录 ─────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/providers',
+      handler: async ({ res, json }) => {
+        const providers = currentProviders().map((p) => ({
+          id: p.id, displayName: p.displayName, baseURL: p.baseURL,
+          apiKey: '', apiKeyFrom: p.apiKeyFrom || '', needsBaseUrl: p.needsBaseUrl === true,
+          hasKey: !!p.apiKey, anthropicOrigin: p.anthropicOrigin === true,
+          models: p.models, modelNames: p.modelNames || {}
+        }));
+        return json(res, 200, { providers, source: getConfig().providersSourceYaml });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/providers/key',
+      handler: async ({ req, res, json, url }) => {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
+        const pid = String(url.searchParams.get('providerId') || '');
+        const p = currentProviders().find((x) => x.id === pid);
+        return json(res, 200, { apiKey: p?.apiKey || '' });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/api-key',
+      handler: async ({ req, res, json }) => {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
+        return json(res, 200, { apiKey: String(getConfig().api.apiKey || '') });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/search-key',
+      handler: async ({ req, res, json, url }) => {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
+        const field = String(url.searchParams.get('field') || '');
+        const allowed = ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso'];
+        // 各家对应的环境变量名：Key 没存进配置但环境里有时，也算"有 Key"
+        //（web-search.js 的取值优先级就是 cfg.apiKey > env），UI 的掩码/显示
+        // 口径必须与之一致，否则会出现"明明能搜，Key 框却显示空"的错觉。
+        const ENV_OF = {
+          deepseek: 'DEEPSEEK_API_KEY',
+          zhipu: 'ZHIPU_API_KEY',
+          bocha: 'BOCHA_API_KEY',
+          baidu: 'BAIDU_SEARCH_API_KEY',
+          metaso: 'METASO_API_KEY'
+        };
+        if (allowed.includes(field)) {
+          const fromCfg = String(getConfig().webSearch?.[field]?.apiKey || '');
+          return json(res, 200, { apiKey: fromCfg, hasApiKey: Boolean(fromCfg || (ENV_OF[field] && process.env[ENV_OF[field]])) });
+        }
+        // 自定义搜索服务：field 形如 custom:<id>，按 id 在 providers 数组里找
+        if (field.startsWith('custom:')) {
+          const id = field.slice('custom:'.length);
+          const entry = (getConfig().webSearch?.providers || []).find((p) => String(p.id) === id);
+          const k = String(entry?.apiKey || '');
+          return json(res, 200, { apiKey: k, hasApiKey: Boolean(k) });
+        }
+        return json(res, 400, { error: `未知搜索服务：${field}` });
+      }
+    },
+    {
+      // OneBot 令牌明文读取：控制台「显示」按钮专用（与 /api/search-key 同一套来源校验）。
+      // 必须有这个端点：配置经 sanitizeConfig 脱敏后前端只拿得到掩码，
+      // 用户想"看一眼现有令牌"只能走这里。
+      method: 'GET', pattern: '/api/onebot-token',
+      handler: async ({ req, res, json, url }) => {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
+        const which = String(url.searchParams.get('which') || '');
+        const snow = getConfig().snowluma || {};
+        if (which === 'ws') return json(res, 200, { token: String(snow.accessToken || '') });
+        if (which === 'http') return json(res, 200, { token: String(snow.httpAccessToken || snow.accessToken || '') });
+        return json(res, 400, { error: `未知令牌类型：${which}` });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/fetch-models',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const cfgNow = getConfig();
+          const baseUrl = String(body.baseUrl || cfgNow.api.baseUrl || '');
+          // Key 解析顺序（2026-09-20 修 401 高发）：显式明文 > 按 providerId 查该提供商
+          // 保存的 Key（dshProviderKeys / providers[].apiKey）> 顶层 api.apiKey。
+          // 旧实现只看顶层 Key —— 多提供商场景下顶层只存"当前选中那个"的 Key，
+          // 从其它提供商拉列表就会拿错 Key，全部 401。
+          let apiKey = '';
+          if (body.apiKey !== undefined && String(body.apiKey ?? '').trim() && body.apiKey !== '******') {
+            apiKey = String(body.apiKey).trim();
+          } else {
+            const pid = String(body.providerId ?? '').trim();
+            const p = pid ? currentProviders().find((x) => x.id === pid) : null;
+            apiKey = String(p?.apiKey ?? '').trim();
+            if (!apiKey) apiKey = String(cfgNow.api.apiKey || '').trim();
+            if (apiKey === '******') apiKey = '';
+          }
+          const models = await fetchModelsFrom(baseUrl, apiKey);
+          return json(res, 200, { ok: true, models });
+        } catch (error) {
+          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/test-one',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const result = await testOneProvider({
+            providerId: String(body.providerId ?? ''),
+            baseUrl: String(body.baseUrl ?? ''),
+            apiKey: String(body.apiKey ?? '')
+          });
+          return json(res, 200, { ok: true, result });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/test-chat',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const submitted = String(body.apiKey ?? '').trim();
+          const apiKey = (submitted && submitted !== '******') ? submitted : resolveApiKey(getConfig());
+          const baseUrl = String(body.baseUrl ?? '');
+          const model = String(body.model ?? '');
+          const result = await testModelChat({ baseUrl, apiKey, model });
+          // 「思考方言」由内置方言表识别（原 thinking-adapters 插件收编进核心）。
+          // 接在这里是为了让用户在"测试连通性"时就能看到这个模型会走哪套思考参数，
+          // 而不是开了思考模式后默默不生效、只能去翻日志。
+          let thinking = null;
+          try {
+            thinking = detectThinkingDialect({ baseUrl, model }) || null;
+          } catch { /* 识别失败不影响连通性测试结论 */ }
+          return json(res, 200, { ok: true, result: { ...result, thinking } });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const r = upsertProvider({
+            baseUrl: String(body.baseUrl ?? ''), apiKey: String(body.apiKey ?? ''), models: body.models || []
+          });
+          return json(res, 200, { ok: true, ...r, provider: sanitizeProvider(r.provider) });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/models',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const p = addModelsToProvider(String(body.providerId ?? ''), body.models || []);
+          if (!p) return json(res, 404, { ok: false, error: '提供商不存在' });
+          return json(res, 200, { ok: true, provider: sanitizeProvider(p) });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'DELETE', pattern: '/api/providers/models',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const p = removeModelFromProvider(String(body.providerId ?? ''), String(body.modelId ?? ''));
+          if (!p) return json(res, 404, { ok: false, error: '提供商或模型不存在' });
+          return json(res, 200, { ok: true, provider: sanitizeProvider(p) });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/set-key',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const updated = setProviderKey(String(body.providerId ?? ''), String(body.apiKey ?? ''));
+        if (!updated) return json(res, 404, { ok: false, error: '提供商不存在' });
+        return json(res, 200, { ok: true, hasKey: !!updated.apiKey });
+      }
+    },
+    {
+      // 删除整个提供商（含 Key 与模型目录；当前选中它时一并清空选中态）
+      method: 'DELETE', pattern: '/api/providers',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const removed = removeProvider(String(body.providerId ?? ''));
+          if (!removed) return json(res, 404, { ok: false, error: '提供商不存在' });
+          return json(res, 200, { ok: true });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/providers/test-all',
+      handler: async ({ res, json }) => {
+        const results = await testAllProviders(currentProviders());
+        const okCount = Object.values(results).filter((r) => r.ok).length;
+        return json(res, 200, { ok: true, results, okCount, total: Object.keys(results).length });
+      }
+    },
+
+    // ── 视觉能力 ─────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/vision/results',
+      handler: async ({ res, json }) => json(res, 200, {
+        results: { ...builtinVisionResults(currentProviders()), ...visionResults() },
+        scanning: visionScan.running
+      })
+    },
+    {
+      method: 'POST', pattern: '/api/vision/scan',
+      handler: async ({ req, res, json }) => {
+        if (visionScan.running) return json(res, 409, { ok: false, error: '已有一次扫描正在进行' });
+        const body = await bodyOf(req);
+        const onlyProviderIds = Array.isArray(body?.providerIds) ? body.providerIds.map(String) : null;
+        visionScan.running = true;
+        emit('vision-scan', { phase: 'start' });
+        scanModelsVision({ providers: currentProviders(), emit, onlyProviderIds, timeoutMs: 25000, limit: 3 })
+          .then(({ total }) => emit('vision-scan', { phase: 'done', total }))
+          .catch((error) => emit('vision-scan', { phase: 'error', error: String(error?.message ?? error) }))
+          .finally(() => { visionScan.running = false; });
+        return json(res, 202, { ok: true, started: true });
+      }
+    },
+
+    // ── 自定义搜索提供商 ─────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/search-providers',
+      handler: async ({ res, json }) => {
+        const list = (getConfig().webSearch?.providers || []).map((p) => ({
+          id: p.id, name: p.name, type: p.type, baseUrl: p.baseUrl, model: p.model,
+          count: p.count, timeoutMs: p.timeoutMs, hasApiKey: Boolean(String(p.apiKey || '').trim())
+        }));
+        return json(res, 200, { providers: list });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/search-providers',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const baseUrl = String(body.baseUrl ?? '').trim();
+          const type = String(body.type ?? 'openai').trim() === 'bing' ? 'bing' : 'openai';
+          if (!baseUrl) return json(res, 400, { ok: false, error: '接口地址不能为空' });
+          const list = [...(getConfig().webSearch?.providers || [])];
+          const existing = list.find((p) => p.baseUrl === baseUrl && p.type === type);
+          let entry;
+          if (existing) {
+            existing.name = String(body.name ?? existing.name ?? '').trim() || existing.name;
+            existing.baseUrl = baseUrl;
+            existing.type = type;
+            existing.model = String(body.model ?? existing.model ?? '').trim();
+            existing.count = Math.min(20, Math.max(1, Number(body.count) || existing.count || 6));
+            existing.timeoutMs = Math.max(5000, Number(body.timeoutMs) || existing.timeoutMs || 20000);
+            // apiKey 语义（与「清除密钥」按钮配套）：
+            //   undefined / '******' → 不动（保持原 Key）
+            //   非空字符串           → 覆盖为新 Key
+            //   ''（显式空串）        → 清除
+            if (body.apiKey === undefined) {
+              /* 未提交：保持原值 */
+            } else if (String(body.apiKey) === '******') {
+              /* 掩码回传：保持原值 */
+            } else {
+              existing.apiKey = String(body.apiKey).trim();
+            }
+            entry = existing;
+          } else {
+            entry = {
+              id: `sp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+              name: String(body.name ?? '').trim() || baseUrl,
+              type, baseUrl,
+              apiKey: String(body.apiKey ?? '').trim() === '******' ? '' : String(body.apiKey ?? '').trim(),
+              model: String(body.model ?? '').trim(),
+              count: Math.min(20, Math.max(1, Number(body.count) || 6)),
+              timeoutMs: Math.max(5000, Number(body.timeoutMs) || 20000)
+            };
+            list.push(entry);
+          }
+          updateConfig({ webSearch: { providers: list } });
+          return json(res, 200, { ok: true, provider: { ...entry, apiKey: '', hasApiKey: Boolean(String(entry.apiKey || '').trim()) } });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'DELETE', pattern: '/api/search-providers',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const id = String(body.id ?? '').trim();
+          if (!id) return json(res, 400, { ok: false, error: '缺少 id' });
+          const list = (getConfig().webSearch?.providers || []).filter((p) => String(p.id) !== id);
+          updateConfig({ webSearch: { providers: list } });
+          const cur = String(getConfig().webSearch?.provider || '');
+          if (cur === `custom:${id}`) updateConfig({ webSearch: { provider: 'bing' } });
+          return json(res, 200, { ok: true });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/search-providers/test',
+      handler: async ({ req, res, json }) => {
+        const startedAt = Date.now();
+        try {
+          const body = await bodyOf(req);
+          const provId = String(body.providerId ?? '').trim();
+          const r = await customSearch('qq agent 测试', provId || null);
+          return json(res, 200, { ok: true, result: { ok: true, count: r.results.length, sample: r.results[0]?.title || '', latencyMs: Date.now() - startedAt } });
+        } catch (error) {
+          return json(res, 200, { ok: true, result: { ok: false, note: String(error?.message ?? error), latencyMs: Date.now() - startedAt } });
+        }
+      }
+    },
+
+    // ── 连通性测试 ───────────────────────────────────────────────────
+    {
+      method: 'POST', pattern: '/api/test/api',
+      handler: async ({ res, json }) => {
+        const startedAt = Date.now();
+        try {
+          const r = await chatCompletion({ messages: [{ role: 'user', content: '请只回复两个字符：pong' }], tools: null, temperature: 0 });
+          const reply = typeof r.message.content === 'string' ? r.message.content.slice(0, 100) : '';
+          return json(res, 200, { ok: true, model: r.model, reply, latencyMs: Date.now() - startedAt });
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error), latencyMs: Date.now() - startedAt });
+        }
+      }
+    },
+
+    // ── 配置 ─────────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/config',
+      handler: async ({ res, json }) => json(res, 200, sanitizeConfig(getConfig()))
+    },
+    {
+      // 完整系统提示词预览：按**当前**插件/技能/工具启用状态组装（没开的不出现），
+      // 供设置-工具与技能页和技能页右侧预览共用。走后端而不是前端拼：组装逻辑
+      // 就是运行时的 buildSystemPrompt + getToolAvailability，前端另写一份迟早漂移。
+      // 注意 skillContext 与 orchestrator 同构（visionEnabled/searchEnabled/toolsCfg），
+      // 否则预览和实际运行的口径会分裂。
+      //
+      // POST + 可选 overrides：前端自动保存有 600ms 防抖，用户刚点的开关还没落盘；
+      // 调用方把"当前工具面板状态"随请求发来，这里先 deepMerge 到临时副本上组装
+      // （绝不写回 currentConfig），预览就能立即反映未保存的开关。
+      method: '*', pattern: '/api/prompt-preview',
+      handler: async ({ req, res, json }) => {
+        const cfg = getConfig();
+        let overrides = {};
+        try {
+          if (req.method === 'POST') overrides = (await bodyOf(req)) || {};
+        } catch { overrides = {}; }
+        const effective = Object.keys(overrides).length
+          ? deepMergeConfig(structuredClone(cfg), structuredClone(overrides))
+          : cfg;
+        const skillContext = {
+          skills: skillManager,
+          toolsCfg: effective.tools || {},
+          visionEnabled: effective.api?.vision !== false
+            && modelImageVerdict(effective.api?.provider, effective.api?.model) !== 'no-vision',
+          searchEnabled: effective.webSearch?.enabled !== false,
+          runtimeContext: { model: effective.api?.model || '', provider: effective.api?.provider || '', source: 'api' }
+        };
+        const { buildSystemPrompt } = await import('./prompt.js');
+        const { buildToolDefs } = await import('./tools.js');
+        const { getToolAvailability } = await import('./tool-registry.js');
+        // 可用工具清单与 orchestrator 同一口径（tools.js 的 def → OpenAI 函数名）
+        const tools = buildToolDefs()
+          .filter((d) => getToolAvailability(d.id, skillContext).enabled)
+          .map((d) => ({ id: d.id, name: d.name, description: d.description, category: d.category }));
+        return json(res, 200, {
+          systemPrompt: buildSystemPrompt({ skillContext }),
+          tools
+        });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/community/blocklist',
+      handler: async ({ res, json }) => json(res, 200, { ok: true, ids: getGlobalBlocklist() })
+    },
+    {
+      method: 'POST', pattern: '/api/community/blocklist',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const ids = Array.isArray(body?.ids) ? body.ids : [];
+        try {
+          const { ids: actual, warning } = await updateGlobalBlocklist(ids, { mode: String(body?.mode || 'replace') });
+          emit('status', { communityBlocklistUpdated: true });
+          return json(res, 200, { ok: true, ids: actual, warning: warning || '' });
+        } catch (error) {
+          return json(res, 502, { ok: false, error: `云端屏蔽名单更新失败：${String(error?.message ?? error)}` });
+        }
+      }
+    },
+
+    // ── 社区市场（账号 / 发布 / 口令安装）已随原作者服务器下线整体移除 ──
+
+    // ── Skill 管理 ─────────────────────────────────────────────────────
+    // 统一开关入口：前端只改这里，模块内部一律读 skillManager。
+    {
+      method: 'GET', pattern: '/api/skills',
+      handler: async ({ res, json }) => {
+        const context = skillRuntimeContext();
+        // uninstalled：配置里还有 skills.<id> 段、但磁盘上已经没有这个条目
+        // （删目录后的配置残留）。UI 显示成"已配置但未安装"，并提供一键清理。
+        const installedIds = new Set(skillManager.list(context).map((s) => s.id));
+        const uninstalled = listConfiguredSkillIds()
+          .filter((id) => !installedIds.has(id))
+          .map((id) => {
+            const c = getConfig()?.skills?.[id] || {};
+            return {
+              id,
+              enabled: c.enabled !== false,
+              hasSettings: Object.keys(c).some((k) => k !== 'enabled')
+            };
+          });
+        return json(res, 200, {
+          skills: skillManager.list(context),
+          summary: skillManager.summary(context),
+          capabilities: skillManager.capabilities.list().sort(),
+          uninstalled
+        });
+      }
+    },
+    {
+      // 手动重扫磁盘：UI「刷新」按钮的后端动作。
+      // 之前刷新只读内存注册表，watcher 丢事件（目录删除重建 / 网络盘 / 杀软）
+      // 时新插件永远进不来。这里走 app.reloadSkills()：重扫 + 激活 + 刷工具 + 重建 watcher。
+      method: 'POST', pattern: '/api/skills/reload',
+      handler: async ({ res, json }) => {
+        if (typeof reloadSkills !== 'function') {
+          return json(res, 500, { ok: false, error: '核心未提供 reloadSkills（请升级或检查启动方式）' });
+        }
+        try {
+          const result = await reloadSkills({ reason: 'manual' });
+          const context = skillRuntimeContext();
+          return json(res, 200, {
+            ok: true,
+            loaded: result.loaded.map((r) => r.id),
+            failed: result.failed.map((r) => ({ id: r.id, error: r.error })),
+            pruned: result.pruned,
+            skills: skillManager.list(context),
+            summary: skillManager.summary(context),
+            capabilities: skillManager.capabilities.list().sort()
+          });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: `重扫失败：${String(error?.message ?? error)}` });
+        }
+      }
+    },
+    {
+      // 清理"已配置但未安装"的残留配置段：删掉 config.skills.<id>。
+      // body: { ids: [id...] }，只删传入的 id，且要求该 id 当前确实不在注册表里
+      //（防止把正在运行的 Skill 配置误删）。
+      method: 'POST', pattern: '/api/skills/cleanup',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const ids = Array.isArray(body?.ids) ? body.ids.map(String).filter(Boolean) : [];
+        if (!ids.length) return json(res, 400, { ok: false, error: '缺少 ids' });
+        const installed = new Set(skillManager.list().map((s) => s.id));
+        const removable = ids.filter((id) => !installed.has(id));
+        if (!removable.length) {
+          return json(res, 400, { ok: false, error: '没有可清理的条目（都处于已安装状态）' });
+        }
+        const skillsCfg = getConfig()?.skills || {};
+        const next = { ...skillsCfg };
+        for (const id of removable) delete next[id];
+        // deepMerge 传 {} 删不掉已有键，必须用 __replace__ 整体替换
+        updateConfig({ skills: { __replace__: next } });
+        emit('status', { configUpdated: true });
+        return json(res, 200, {
+          ok: true,
+          removed: removable,
+          skipped: ids.filter((id) => installed.has(id)),
+          config: sanitizeConfig(getConfig())
+        });
+      }
+    },
+    {
+      // 单个 Skill：切开关 / 改设置。两个动作分开处理，避免"改了设置顺手把我开着的关了"。
+      method: 'POST', pattern: /^\/api\/skills\/([^/]+)$/,
+      handler: async ({ req, res, json, match }) => {
+        const id = decodeURIComponent(match[1]);
+        const body = await bodyOf(req);
+        const context = skillRuntimeContext();
+        const skill = skillManager.registry.get(id);
+        if (!skill) return json(res, 404, { ok: false, error: `Skill 不存在：${id}` });
+
+        // 1) 开关（先写配置，再跑生命周期；顺序不能反 ——
+        //    activate 里读配置必须已经生效，否则 Skill 会以为自己是关闭的）
+        if (body.enabled !== undefined) {
+          setSkillEnabled(id, !!body.enabled);
+          if (body.enabled) skillManager.activate(id, context);
+          else skillManager.deactivate(id, context);
+        }
+
+        // 2) 设置（只允许改 manifest 声明过的键，防止前端塞垃圾字段进配置）
+        if (body.settings && typeof body.settings === 'object') {
+          const allowed = new Set([
+            ...Object.keys(skill.manifest.settings || {}),
+            ...Object.keys(skill.manifest.configSchema || {})
+          ]);
+          const schema = skill.manifest.configSchema || {};
+          const current = getSkillConfig(id, skill.manifest.settings || {});
+          const patch = {};
+          // ⚠️ 与 settingsView 同一套口径（2026-09-26 审查二轮）：
+          //    ① secret 标记；② 字段名命中 /key|token|secret|password|cookie/i 的
+          //    字符串字段（web-fetch 的 cookie 没有 secret 标记也属密文）。
+          //    收到掩码 '******' 或空串 = "不修改" —— 否则用户只是打开表单点了
+          //    保存，Cookie/Key 就被覆盖成六个星号。
+          const SECRET_NAME_RE = /key|token|secret|password|cookie/i;
+          const isSecretField = (k) => Boolean(schema[k]?.secret)
+            || (SECRET_NAME_RE.test(k) && typeof current[k] === 'string');
+          for (const [k, v] of Object.entries(body.settings)) {
+            if (!allowed.has(k)) continue;
+            if (isSecretField(k) && (v === '******' || String(v ?? '').trim() === '')) continue;
+            patch[k] = v;
+          }
+          if (Object.keys(patch).length) setSkillConfig(id, patch);
+        }
+
+        emit('status', { configUpdated: true });
+        return json(res, 200, {
+          ok: true,
+          skill: skillManager.status(id, context),
+          // ⚠️ 响应里的 settings 必须用脱敏视图（settingsView）：
+          //    曾经直接回 getSkillConfig（明文），保存一次设置就把
+          //    apiKey / Cookie 原文发回浏览器，与 GET 列表的脱敏口径相反。
+          settings: skillManager.settingsView(id),
+          config: sanitizeConfig(getConfig())
+        });
+      }
+    },
+    {
+      // 删除 Skill / 插件：停生命周期 → 删磁盘目录 → 清配置 → 重扫。
+      // 顺序里有三处不能反：
+      //   ① unregister 必须在 rm 之前：deactivate/dispose 会停掉定时器、关掉
+      //      文件句柄，不先停就 rm，Windows 上大概率 EBUSY/EPERM；
+      //   ② 清配置必须在 rm **成功之后**：删目录失败时配置还在，重扫能把技能
+      //      原样恢复，用户重试即可；反过来先清配置会把"删不掉"变成"配置也没了"；
+      //   ③ 返回 200 之前必须重扫：重建 watcher、刷新工具表，否则技能页还显示
+      //      已删除的条目、模型仍拿着已删除技能的工具。
+      // 加载失败的条目（loadError 非空）同样可删 —— failRegister 也保存了 dir，
+      // 用户得能清掉写坏的插件，否则只能去手动删目录。
+      method: 'DELETE', pattern: /^\/api\/skills\/([^/]+)$/,
+      handler: async ({ res, json, match }) => {
+        const id = decodeURIComponent(match[1]);
+        const skill = skillManager.registry.get(id);
+        if (!skill) return json(res, 404, { ok: false, error: `Skill 不存在：${id}` });
+
+        // 安全校验（见 skills/delete-dir.js）：只允许删 skills/ 或 plugins/ 根目录的
+        // 直接子目录，拒绝符号链接、根外路径、根目录本身。注册表里的 dir 是加载器
+        // 写入的绝对路径，但仍从头校验 —— 配置/目录都可能被外部改过。
+        // 必须是 409 而不是 400：请求本身合法，是"当前磁盘状态不允许删"。
+        const roots = SKILL_DIRS;
+        const check = resolveDeletableExtensionDir(skill.dir, roots);
+        if (!check.ok) return json(res, 409, { ok: false, error: check.error });
+
+        // 先卸内存态：deactivate → dispose（回收工具/能力）。
+        // 放在 rm 之前，且不依赖它的返回值判错（管理器内部对生命周期异常已隔离，
+        // 单个 Skill 的 dispose 抛错不该阻断"删除"这个用户明确要求的动作）。
+        skillManager.unregister(id, { reason: 'delete' });
+
+        let removal;
+        try {
+          // 删除前再校验一次（TOCTOU）：校验、unregister 到真正 rm 之间目录可能被
+          // 替换成符号链接；removeExtensionDir 内部会重新走一遍完整规则。
+          removal = await removeExtensionDir(skill.dir, roots);
+        } catch (error) {
+          // 删磁盘失败（EBUSY/EPERM/ENOENT…）：目录还在，配置也还没动。
+          // 尽力重扫一次把内存注册表恢复回去（否则技能从列表里消失但磁盘还在，
+          // 用户会以为删成功了），重扫失败就只能等手动刷新。
+          if (typeof reloadSkills === 'function') {
+            try { await reloadSkills({ reason: 'delete-failed' }); } catch { /* 恢复失败不影响 500 语义 */ }
+          }
+          log(`[skill] 删除 ${id} 失败：${error?.stack ?? error?.message ?? error}`);
+          return json(res, 500, { ok: false, error: `删除目录失败：${String(error?.message ?? error)}` });
+        }
+        if (!removal?.ok) {
+          // 二次校验没通过（校验与 rm 之间目录被换成符号链接、或被别的进程删掉等
+          // 竞态）：removeExtensionDir 在校验失败时**不抛错而是返回**，这里必须接住，
+          // 否则会把"什么都没删"谎报成 200。磁盘没动，恢复内存态并按 409 返回。
+          if (typeof reloadSkills === 'function') {
+            try { await reloadSkills({ reason: 'delete-aborted' }); } catch { /* ignore */ }
+          }
+          log(`[skill] 删除 ${id} 已中止（二次校验未通过）：${removal?.error || ''}`);
+          return json(res, 409, { ok: false, error: removal?.error || '目录校验未通过，已放弃删除' });
+        }
+
+        // 目录已删掉，才清 config.skills[id] 的残留（开关状态 / 各 Skill 设置）。
+        // 只有确实存在这个键才写配置，避免每次删除都触发一次无意义的落盘。
+        const skillsCfg = getConfig()?.skills || {};
+        const removedConfig = Object.prototype.hasOwnProperty.call(skillsCfg, id);
+        try {
+          if (removedConfig) {
+            const next = { ...skillsCfg };
+            delete next[id];
+            // deepMerge 传 {} 删不掉已有键，必须用 __replace__ 整体替换（同 /api/skills/cleanup）
+            updateConfig({ skills: { __replace__: next } });
+          }
+        } catch (error) {
+          // 极端情况（配置只读/磁盘满）：目录已删但配置没清干净。
+          // 如实报 500 而不是伪装成功 —— 残留配置会在 GET /api/skills 的
+          // uninstalled 列表里出现，可用 /api/skills/cleanup 清掉。
+          // 内存态要跟着磁盘走：先重扫（目录已不在，不会把它复活），
+          // 避免 UI 还挂着已删条目的工具与状态。
+          log(`[skill] 删除 ${id} 的配置失败：${error?.stack ?? error?.message ?? error}`);
+          emit('status', { configUpdated: true });
+          if (typeof reloadSkills === 'function') {
+            try { await reloadSkills({ reason: 'delete-config-failed' }); } catch { /* ignore */ }
+          }
+          return json(res, 500, { ok: false, error: `目录已删除，但清理配置失败：${String(error?.message ?? error)}` });
+        }
+
+        emit('status', { configUpdated: true });
+        // 重扫失败不影响删除结果：目录与配置都已落定，下次启动 / 手动刷新会自愈，
+        // 所以这里只记日志，仍然返回 200（用户要的"删掉"已经做到了）。
+        if (typeof reloadSkills === 'function') {
+          try { await reloadSkills({ reason: 'delete' }); } catch (error) {
+            log(`[skill] 删除 ${id} 后重扫失败（不影响删除结果）：${error?.message ?? error}`);
+          }
+        }
+        return json(res, 200, {
+          ok: true,
+          id,
+          // dir 返回仓库相对路径（relDir）：绝对路径暴露本机安装位置，也只是给 UI 显示
+          dir: skill.relDir || '',
+          removedConfig,
+          config: sanitizeConfig(getConfig())
+        });
+      }
+    },
+    {
+      // 开关配置总览：给设置页渲染"技能"区块
+      method: 'GET', pattern: '/api/skills/capabilities',
+      handler: async ({ res, json }) => {
+        const context = skillRuntimeContext();
+        const caps = skillManager.capabilities.list().sort();
+        return json(res, 200, {
+          capabilities: caps.map((c) => ({
+            name: c,
+            ...skillManager.explainCapability(c, context)
+          }))
+        });
+      }
+    },
+    {
+      // 工具可用性总览：明确告诉 UI "这个工具为什么没生效"
+      method: 'GET', pattern: '/api/tools/availability',
+      handler: async ({ res, json }) => {
+        const context = skillRuntimeContext();
+        const availability = availabilityOf(context);
+        const defs = new Map(listTools().map((t) => [t.id, t]));
+        return json(res, 200, {
+          categories: CATEGORY_META,
+          tools: availability.map((a) => ({
+            id: a.id,
+            category: defs.get(a.id)?.category || 'system',
+            skillId: a.skillId,
+            enabled: a.enabled,
+            code: a.code,
+            reason: a.reason
+          }))
+        });
+      }
+    },
+
+
+    {
+      method: 'POST', pattern: '/api/config',
+      handler: async ({ req, res, json }) => {
+        const patch = await readBody(req);
+        // 远程监听安全闸：要开非 loopback 监听，合并后的 token 必须有效。
+        // 在 updateConfig 之前拦下 —— 先落盘再报错会让"裸奔配置"生效到下次重启。
+        if (patch?.server && ('listenHost' in patch.server || 'token' in patch.server)) {
+          const cfgNow = getConfig();
+          const nextHost = String('listenHost' in patch.server ? patch.server.listenHost : cfgNow.server?.listenHost ?? '').trim();
+          const nextToken = String('token' in patch.server ? patch.server.token : cfgNow.server?.token ?? '');
+          const loopback = nextHost === '127.0.0.1' || nextHost === '::1' || nextHost === '[::1]';
+          if (!loopback) {
+            const t = nextToken.trim();
+            if (t.length < 8 || !/^[\x21-\x7e]+$/.test(t)) {
+              return json(res, 400, { error: '开启局域网监听必须先设置访问令牌（≥8 位、纯 ASCII 可打印字符）' });
+            }
+          }
+        }
+        const next = updateConfig(patch);
+        store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
+        sessions?.setKeepFiles?.(next.store?.keepSessionFiles ?? 0);
+        sessions?.setKeepDays?.(next.store?.keepSessionDays ?? 35);
+        if (next.proactive?.enabled) orchestrator.startProactiveLoop(); else orchestrator.stopProactiveLoop();
+        // 远程开关（listenHost）热生效：响应发出后即时重绑监听地址，无需重启。
+        // ⚠️ 两个时序坑（2026-11-07 测试实踩）：
+        //   1. 重绑会断现有连接 —— 必须等响应完全发出后执行（挂 res 'finish'）；
+        //   2. 即便 finish 了，客户端可能还没把响应读完就被 RST → fetch 报
+        //      ECONNRESET。所以这条响应显式 Connection: close（客户端把随后的
+        //      断开当正常关闭，不会复用这条 socket），再垫 100ms 缓冲。
+        // 本机（回环）永远免令牌 + 端口不变，桌面窗口与本机浏览器全程无感知。
+        let listen = null;
+        if (patch?.server && 'listenHost' in patch.server && typeof applyListenHost === 'function') {
+          const v = String(patch.server.listenHost ?? '').trim();
+          const targetRemote = !(v === '127.0.0.1' || v === '::1' || v === '[::1]' || v === 'localhost');
+          listen = { pending: true, remote: targetRemote };
+          res.setHeader('connection', 'close');   // json() 的 writeHead 会与本头合并发出
+          res.once('finish', () => {
+            setTimeout(() => {
+              applyListenHost().catch((error) => {
+                log(`[server] 监听地址热切换失败（配置已保存，重启后按新配置生效）：${error?.stack ?? error?.message ?? error}`);
+              });
+            }, 100);
+          });
+        }
+        emit('status', { configUpdated: true });
+        // ⚠️ 必须脱敏：updateConfig 返回的是内存里的活配置对象，含明文 apiKey /
+        //    accessToken / dshProviderKeys。GET /api/config 一直是脱敏的，
+        //    这里漏掉会让"任何一次保存设置"把全部明文密钥回传给浏览器。
+        return json(res, 200, { ok: true, config: sanitizeConfig(next), listen });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/tools',
+      handler: async ({ res, json }) => {
+        const { listTools } = await import('./tool-registry.js');
+        const tools = listTools().map((t) => ({
+          id: t.id, name: t.name, description: t.description, category: t.category,
+          icon: t.icon, defaultEnabled: t.defaultEnabled, requiresVision: t.requiresVision, requiresSearch: t.requiresSearch,
+          // 来源标记：属于哪个 Skill（内置工具为 null）—— UI 据此打「skill」标识，
+          // 并在所属技能失活时把工具整组隐藏（与提示词口径一致）。
+          skillId: t.skillId ?? null
+        }));
+        return json(res, 200, { tools });
+      }
+    },
+
+    // ── 版本 / 更新 ──────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/version',
+      handler: async ({ res, json }) => json(res, 200, { version: localVersion() })
+    },
+    // 更新检查已移除（原作者 version.json 随上游下线）。
+
+    // ── 模型 / 会话 / 存档 ───────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/models',
+      handler: async ({ res, json }) => {
+        try {
+          const models = await listModels();
+          return json(res, 200, { models });
+        } catch (error) {
+          return json(res, 502, { error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/sessions',
+      handler: async ({ res, json, url }) => {
+        const limit = Math.min(1048576, Math.max(1, Number(url.searchParams.get('limit')) || 1048576));
+        return json(res, 200, { sessions: sessions.listSummaries(limit) });
+      }
+    },
+    {
+      method: 'GET', pattern: /^\/api\/sessions\/([\w-]+)$/,
+      handler: async ({ res, json, match }) => {
+        const s = sessions.get(match[1]);
+        if (!s) return json(res, 404, { error: '会话不存在' });
+        return json(res, 200, s);
+      }
+    },
+    {
+      // 主动删除一条会话记录（正在运行的不能删）
+      method: 'DELETE', pattern: /^\/api\/sessions\/([\w-]+)$/,
+      handler: async ({ res, json, match }) => {
+        const removed = sessions.remove(match[1]);
+        if (!removed) return json(res, 409, { ok: false, error: '会话不存在或正在运行（运行中的会话不能删除）' });
+        emit('session-end', { sessionId: match[1], status: 'deleted' });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      // 清空全部已结束的会话记录（保留运行中/等待中的）
+      method: 'POST', pattern: '/api/sessions/clear-finished',
+      handler: async ({ res, json }) => {
+        const removed = sessions.clearFinished();
+        emit('session-end', { status: 'cleared', removed });
+        return json(res, 200, { ok: true, removed });
+      }
+    },
+    {
+      // 手动重试一条失败的会话：把触发批翻回未读并立即唤醒（会话页「重试」按钮）。
+      // 只有 error 状态且未发出过消息的会话允许重试（已发言的重试 = 群里看到两遍）。
+      method: 'POST', pattern: /^\/api\/sessions\/([\w-]+)\/retry$/,
+      handler: async ({ res, json, match }) => {
+        const r = orchestrator.retrySession(match[1]);
+        if (!r.ok) return json(res, 409, { ok: false, error: r.reason });
+        return json(res, 200, { ok: true, restored: r.restored });
+      }
+    },
+    {
+      // 中止一个运行中/等待中的会话（会话页「中止」按钮）。
+      // 运行中的会话在下一轮 LLM 请求前安全收尾（不截断途中的请求/发送）；
+      // 等待中的会话直接干净消失。不在两种状态之一（如已结束）则拒绝。
+      method: 'POST', pattern: /^\/api\/sessions\/([\w-]+)\/abort$/,
+      handler: async ({ res, json, match }) => {
+        const r = orchestrator.abortSession(match[1]);
+        if (!r.ok) return json(res, 409, { ok: false, error: r.reason });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/chats',
+      handler: async ({ res, json }) => {
+        const chats = store.listChats().map((key) => ({ key, ...store.getChatMeta(key) }))
+          .sort((a, b) => b.lastTs - a.lastTs);
+        await Promise.allSettled(chats.map(async (c) => {
+          // 网页对话（private:web）：虚拟会话，固定显示名
+          if (String(c.key) === 'private:web') { c.chatName = '网页对话'; return; }
+          const m = /^group:(\d+)$/.exec(String(c.key || ''));
+          if (!m) { c.chatName = ''; return; }
+          try {
+            c.chatName = await Promise.race([
+              orchestrator.getChatName(m[1]),
+              new Promise((r) => setTimeout(() => r(''), 3000))
+            ]) || '';
+          } catch { c.chatName = ''; }
+        }));
+        return json(res, 200, { chats });
+      }
+    },
+
+    // ── 网页对话（控制台「对话」页签）────────────────────────────────
+    // 虚拟会话 private:web：入站走 appendIncoming + orchestrator.onIncoming，
+    // 与 QQ 私聊完全同一管道（记忆/人设/技能/存档/会话页全继承）；出站由
+    // sender 的 web 分支直接落存档。不经 allowed() 白名单 —— 这不是 QQ
+    // 会话，也没有 QQ 侧副作用可被滥用。
+    {
+      method: 'GET', pattern: '/api/webchat/messages',
+      handler: async ({ res, json, url }) => {
+        const limit = Math.min(1048576, Math.max(1, Number(url.searchParams.get('limit')) || 500));
+        const messages = store.recent(WEB_CHAT_KEY, { limit }).map((m) => ({
+          id: m.id, ts: m.ts, senderId: m.senderId, senderName: m.senderName,
+          text: m.text, self: m.self, read: m.read, media: m.media || []
+        }));
+        return json(res, 200, { chatKey: WEB_CHAT_KEY, messages });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/webchat/send',
+      handler: async ({ req, res, json }) => {
+        const body = await readBody(req);
+        const text = String(body.text ?? '').trim();
+        if (!text) return json(res, 400, { error: '消息内容为空' });
+        if (text.length > 8000) return json(res, 400, { error: '消息过长（上限 8000 字）' });
+        const paused = orchestrator.paused;
+        const entry = store.appendIncoming(WEB_CHAT_KEY, {
+          mid: null,
+          ts: Date.now(),
+          senderId: 'web',
+          senderName: String(getConfig().webChat?.senderName || '网页用户'),
+          text
+        });
+        emit('chat-update', WEB_CHAT_KEY);
+        // 管道入口与 QQ 消息 ingest 同一处：暂停/模型未设置时消息保持未读，
+        // 恢复后由积压逻辑补处理（与 QQ 行为一致）。
+        orchestrator.onIncoming(WEB_CHAT_KEY, entry);
+        return json(res, 200, {
+          ok: true,
+          entry: { id: entry.id, ts: entry.ts, text: entry.text },
+          paused
+        });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/webchat/status',
+      handler: async ({ res, json }) => json(res, 200, {
+        chatKey: WEB_CHAT_KEY,
+        running: orchestrator.runningChats.has(WEB_CHAT_KEY),
+        waiting: orchestrator.pendingWake.has(WEB_CHAT_KEY),
+        paused: orchestrator.paused,
+        model: String(getConfig().api.model || '')
+      })
+    },
+
+    // ── 记忆 ─────────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/memory-files',
+      handler: async ({ res, json }) => {
+        const files = memory.listChats().map((chatKey) => {
+          const members = memory.members(chatKey);
+          const impressionCount = members.reduce((n, m) => n + m.impressions.length, 0);
+          return {
+            chatKey, impressionCount, memberCount: members.length,
+            updatedAt: Math.max(0, ...members.map((m) => Number(m.updatedAt) || 0))
+          };
+        });
+        const seen = new Set(files.map((f) => f.chatKey));
+        for (const gid of (getConfig().allow?.groups || [])) {
+          const key = `group:${String(gid)}`;
+          if (!seen.has(key)) files.push({ chatKey: key, impressionCount: 0, memberCount: 0, updatedAt: 0, consolidating: false });
+        }
+        for (const uid of (getConfig().allow?.private || [])) {
+          const key = `private:${String(uid)}`;
+          if (!seen.has(key)) files.push({ chatKey: key, impressionCount: 0, memberCount: 0, updatedAt: 0, consolidating: false });
+        }
+        const busy = orchestrator.consolidating;
+        for (const f of files) f.consolidating = busy.has(f.chatKey);
+        files.sort((a, b) => b.updatedAt - a.updatedAt);
+        return json(res, 200, { files, consolidating: [...busy] });
+      }
+    },
+    {
+      method: 'GET', pattern: /^\/api\/memory-files\/(group|private)_(\d+|web)$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        return json(res, 200, { ...memory.query(chatKey), members: memory.members(chatKey) });
+      }
+    },
+    {
+      method: 'PUT', pattern: /^\/api\/memory-files\/(group|private)_(\d+|web)\/members\/(\d+)$/,
+      handler: async ({ req, res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        const body = await bodyOf(req);
+        try {
+          const member = memory.editMemberImpression(chatKey, {
+            userId: match[3],
+            name: String(body.name ?? ''),
+            note: body.note ?? '',
+            impressions: body.impressions ?? []
+          });
+          emit('memory-update', { chatKey });
+          return json(res, 200, { ok: true, member });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'DELETE', pattern: /^\/api\/memory-files\/(group|private)_(\d+|web)\/members\/(\d+)$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        memory.removeMember(chatKey, match[3]);
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      // 删除整个会话的记忆（记忆页「删除本会话记忆」按钮）
+      method: 'DELETE', pattern: /^\/api\/memory-files\/(group|private)_(\d+|web)$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        memory.removeChat(chatKey);
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/memory-files/consolidate',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await bodyOf(req);
+          const chatKey = String(body.chatKey || '');
+          if (!/^(group|private):(\d+|web)$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
+          let userIds = null;
+          if (body.userIds != null) {
+            const arr = Array.isArray(body.userIds) ? body.userIds : [body.userIds];
+            userIds = arr.map((u) => String(u ?? '').trim()).filter((u) => /^\d{1,15}$/.test(u));
+            if (!userIds.length) return json(res, 400, { ok: false, error: 'userIds 需为 QQ 号数组' });
+          }
+          const force = body.force !== false;
+          if (orchestrator.consolidating.has(chatKey)) return json(res, 409, { ok: false, error: '该群已在整理中' });
+          orchestrator.consolidating.add(chatKey);
+          emit('memory-update', { chatKey, phase: 'consolidate-start', userIds });
+          orchestrator.consolidateMemoryForChat(chatKey, { userIds, force })
+            .then((result) => emit('memory-update', { chatKey, phase: 'consolidate-done', ...(result || {}) }))
+            .catch((error) => emit('memory-update', { chatKey, phase: 'consolidate-error', error: String(error?.message ?? error) }))
+            .finally(() => orchestrator.consolidating.delete(chatKey));
+          return json(res, 202, { ok: true, started: true });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    // ── 存档消息 ─────────────────────────────────────────────────────
+    {
+      method: 'GET', pattern: /^\/api\/chats\/(group|private)_(\d+|web)\/messages$/,
+      handler: async ({ res, json, url, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        const limit = Math.min(1048576, Math.max(1, Number(url.searchParams.get('limit')) || 1048576));
+        const messages = store.recent(chatKey, { limit }).map((m) => ({
+          id: m.id, mid: m.mid, ts: m.ts, senderId: m.senderId, senderName: m.senderName,
+          text: m.text, self: m.self, read: m.read, reply: m.reply, media: m.media || []
+        }));
+        return json(res, 200, { chatKey, messages });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/media-data',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = await readBody(req);
+          const items = Array.isArray(body?.items) ? body.items.slice(0, 20) : [];
+          const mimeOf = (p) => /\.png$/i.test(p) ? 'image/png' : /\.gif$/i.test(p) ? 'image/gif' : /\.webp$/i.test(p) ? 'image/webp' : 'image/jpeg';
+          const fileToDataUrl = (fp) => {
+            const st = fs.statSync(fp);
+            if (st.size > 15 * 1024 * 1024) return null;
+            return `data:${mimeOf(fp)};base64,${fs.readFileSync(fp).toString('base64')}`;
+          };
+          // 下载一律走 safe-fetch：这里的 url 来自请求体（前端/任何本机进程都能构造），
+          // 直接 fetch 等于给了一个"让本机去抓内网"的 SSRF 入口。
+          const safeToDataUrl = async (rawUrl) => {
+            const { buffer, contentType } = await safeFetchBinary(String(rawUrl), 15 * 1024 * 1024, { browseLocked: browseLockState().enabled });
+            if (!buffer?.length || buffer.length > 15 * 1024 * 1024) return null;
+            const type = String(contentType || 'image/jpeg').split(';')[0].trim();
+            if (!/^image\//i.test(type)) return null;
+            return `data:${type};base64,${buffer.toString('base64')}`;
+          };
+          const results = [];
+          for (const it of items) {
+            let dataUrl = null;
+            try {
+              const ret = await onebot.call('get_image', { file: String(it?.file || '') });
+              if (ret?.file && fs.existsSync(String(ret.file))) dataUrl = fileToDataUrl(String(ret.file));
+              if (!dataUrl && ret?.url) dataUrl = await safeToDataUrl(ret.url);
+            } catch { /* 缓存没有 / 地址不可信就走下一条 */ }
+            if (!dataUrl && it?.url) {
+              try { dataUrl = await safeToDataUrl(it.url); } catch { /* 过期或不可信就放弃 */ }
+            }
+            results.push(dataUrl ? { dataUrl } : null);
+          }
+          return json(res, 200, { ok: true, results });
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error), results: [] });
+        }
+      }
+    },
+
+    // ── 群成员 / 会话控制 ────────────────────────────────────────────
+    {
+      method: 'GET', pattern: /^\/api\/groups\/(\d+)\/members$/,
+      handler: async ({ res, json, match }) => {
+        try {
+          const list = await onebot.call('get_group_member_list', { group_id: Number(match[1]) });
+          const members = (Array.isArray(list) ? list : (list?.data ?? []))
+            .map((m) => ({ userId: String(m.user_id), nickname: String(m.nickname || ''), card: String(m.card || '') }))
+            .sort((a, b) => String(a.card || a.nickname).localeCompare(String(b.card || b.nickname), 'zh-CN'));
+          return json(res, 200, { members });
+        } catch (error) {
+          return json(res, 502, { error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+)\/wake$/,
+      handler: async ({ res, json }) => json(res, 410, { error: '已移除：不触发的消息现在会立即标为已读，无需手动唤醒' })
+    },
+    {
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+)\/test-send$/,
+      handler: async ({ req, res, json, match }) => {
+        const body = await readBody(req);
+        const text = String(body.text ?? '').trim();
+        if (!text) return json(res, 400, { error: '消息内容为空' });
+        // ⚠️ 白名单闸（2026-09-26 审查二轮）：本端点曾接受任意 group/private id ——
+        //   任何通过来源校验的本地进程都能借它向**白名单外**的群/私聊发消息
+        //   （绕过 send_to 工具的硬校验，等于给管理端开了一条无白名单的发送通道）。
+        //   现在与 app.allowed() 同口径：deny 优先；allow 非空时必须在名单内；
+        //   全空时必须显式开 allowAllWhenEmpty。
+        const kind = match[1];
+        const id = match[2];
+        const cfgNow = getConfig();
+        const denyList = cfgNow.deny?.[kind] ?? cfgNow.deny?.[`${kind}s`] ?? [];
+        if (denyList.map(String).includes(String(id))) {
+          return json(res, 403, { error: '该会话在黑名单内，不能发送' });
+        }
+        const allowList = cfgNow.allow?.[kind] ?? cfgNow.allow?.[`${kind}s`] ?? [];
+        const allowed = allowList.length > 0
+          ? allowList.map(String).includes(String(id))
+          : cfgNow.allowAllWhenEmpty === true;
+        if (!allowed) {
+          return json(res, 403, { error: '该会话不在白名单内，不能发送（先在设置里加白名单，或开启空白名单放行）' });
+        }
+        try {
+          const chatKey = `${kind}:${id}`;
+          const data = await onebot.sendText(kind, id, text);
+          store.appendSelf(chatKey, { text, ts: Date.now() });
+          emit('chat-update', chatKey);
+          return json(res, 200, { ok: true, messageId: data?.message_id ?? null });
+        } catch (error) {
+          return json(res, 502, { error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+|web)\/mark-read$/,
+      handler: async ({ res, json, match }) => json(res, 200, { ok: true, marked: store.drainUnread(`${match[1]}:${match[2]}`).length })
+    },
+    {
+      // 清空某会话的全部消息（整体清除存档）
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+|web)\/clear$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        const removed = store.clearChat(chatKey);
+        emit('chat-update', chatKey);
+        return json(res, 200, { ok: true, removed });
+      }
+    },
+    {
+      // 仅屏蔽（不删除）：把某会话全部未读标记为已读，不再触发回复
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+|web)\/mute$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        const marked = store.muteUnread(chatKey);
+        emit('chat-update', chatKey);
+        return json(res, 200, { ok: true, marked });
+      }
+    },
+    {
+      // 部分清除：删除指定本地 id 的消息
+      method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+|web)\/delete-messages$/,
+      handler: async ({ req, res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        const body = await bodyOf(req);
+        const ids = Array.isArray(body?.ids) ? body.ids.map(Number).filter((n) => Number.isFinite(n)) : [];
+        if (!ids.length) return json(res, 400, { ok: false, error: '缺少要删除的消息 id 列表（ids）' });
+        const removed = store.removeByLocalIds(chatKey, ids);
+        emit('chat-update', chatKey);
+        return json(res, 200, { ok: true, removed });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/pause',
+      handler: async ({ req, res, json }) => {
+        const body = await readBody(req);
+        const wasPaused = orchestrator.paused;
+        orchestrator.setPaused(!!body.paused);
+        if (wasPaused && !orchestrator.paused && !body.skipBacklog) orchestrator.drainBacklogAfterResume();
+        return json(res, 200, { ok: true, paused: orchestrator.paused });
+      }
+    },
+    {
+      method: 'DELETE', pattern: '/api/pause',
+      handler: async ({ res, json }) => {
+        orchestrator.setPaused(false);
+        const marked = {};
+        for (const chatKey of store.listChats()) {
+          const n = store.drainUnread(chatKey).length;
+          if (n > 0) marked[chatKey] = n;
+        }
+        emit('chat-update', '*');
+        return json(res, 200, { ok: true, paused: false, marked });
+      }
+    },
+
+    // ── 日志系统 ─────────────────────────────────────────────────────
+    {
+      // 最近的日志（UI 日志页签首次加载）
+      method: 'GET', pattern: '/api/logs',
+      handler: async ({ res, json, url }) => {
+        const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+        return json(res, 200, { logs: logger.recent(limit), level: logger.getLevel() });
+      }
+    },
+    {
+      // 调整最低落盘级别（debug/info/warn/error）
+      method: 'POST', pattern: '/api/logs/level',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const level = String(body.level || 'info');
+        logger.setLevel(level);
+        return json(res, 200, { ok: true, level: logger.getLevel() });
+      }
+    },
+
+    // ── 验证码请求转发（2026-09-26）────────────────────────────────
+    // 部分用户机器上 Chromium 渲染层对 *.aliyuncs.com / *.alicdn.com 的请求被
+    // 本机安全软件按进程+域名压制（同机 Node 层、系统 curl 均正常），SDK 走不通。
+    // 由主进程 Node 层（undici，网络栈独立且实测可达）代为转发。
+    // 安全边界（防 SSRF）：目标仅允许 https + aliyuncs/alicdn 两族域名后缀；
+    // 不跟随重定向；body 上限 8MB；响应上限 16MB；超时 15s。
+    {
+      method: '*', pattern: /^\/api\/captcha-forward\/?$/,
+      handler: async ({ req, res, json, url }) => {
+        const target = String((url && url.searchParams.get('u')) || '');
+        let parsed;
+        try { parsed = new URL(target); } catch {
+          return json(res, 400, { ok: false, error: '缺少或非法的 u 参数' });
+        }
+        if (parsed.protocol !== 'https:' ||
+            !/^[a-zA-Z0-9.-]+\.(aliyuncs\.com|alicdn\.com)$/.test(parsed.hostname)) {
+          return json(res, 403, { ok: false, error: `目标不在转发白名单（仅 https 的 aliyuncs/alicdn 域）：${parsed.hostname}` });
+        }
+        // 读原始 body（POST 等需要；上限 8MB）
+        const chunks = [];
+        let size = 0;
+        try {
+          await new Promise((resolve, reject) => {
+            req.on('data', (c) => {
+              size += c.length;
+              if (size > 8 * 1024 * 1024) { reject(new Error('body too large')); req.destroy(); return; }
+              chunks.push(c);
+            });
+            req.on('end', resolve);
+            req.on('error', reject);
+          });
+        } catch { /* 读失败按空 body 处理 */ }
+        const reqBody = Buffer.concat(chunks);
+
+        // 复制请求头（剥掉 hop-by-hop 与本机信息头）
+        const fwdHeaders = {};
+        for (const [k, v] of Object.entries(req.headers)) {
+          const kl = k.toLowerCase();
+          if (['host', 'cookie', 'connection', 'content-length', 'origin', 'referer',
+               'accept-encoding', 'transfer-encoding', 'upgrade', 'expect'].includes(kl)) continue;
+          fwdHeaders[k] = v;
+        }
+        if (reqBody.length && !fwdHeaders['content-type']) fwdHeaders['content-type'] = 'application/octet-stream';
+
+        try {
+          const up = await fetch(parsed.href, {
+            method: req.method,
+            headers: fwdHeaders,
+            body: (req.method === 'GET' || req.method === 'HEAD' || reqBody.length === 0) ? undefined : reqBody,
+            redirect: 'manual',
+            signal: AbortSignal.timeout(15000),
+          });
+          const buf = Buffer.from(await up.arrayBuffer());
+          if (buf.length > 16 * 1024 * 1024) {
+            return json(res, 502, { ok: false, error: '转发响应过大（>16MB）' });
+          }
+          const resHeaders = {};
+          up.headers.forEach((v, k) => {
+            const kl = k.toLowerCase();
+            if (['transfer-encoding', 'content-encoding', 'content-length', 'connection', 'keep-alive'].includes(kl)) return;
+            resHeaders[k] = v;
+          });
+          resHeaders['access-control-allow-origin'] = '*';   // 同源请求用不到，留作兜底
+          res.writeHead(up.status, resHeaders);
+          res.end(buf);
+        } catch (e) {
+          return json(res, 502, { ok: false, error: `转发失败：${String(e?.cause?.code || e?.message || e).slice(0, 120)}` });
+        }
+        return undefined;   // 已自行写响应
+      }
+    },
+
+    // ── 实时语音通话（虚拟声卡桥接）────────────────────────────────────
+    // 状态接口零副作用（不枚举设备，UI 2.5s 轮询用）；设备枚举只在 devices 用。
+    {
+      method: 'GET', pattern: '/api/voice-call/status',
+      handler: async ({ res, json }) => {
+        const s = getVoiceCallSession();
+        const cfg = getConfig();
+        return json(res, 200, {
+          ok: true,
+          state: s.state,
+          callId: s.callId,
+          startedAt: s.startedAt,
+          stats: s.stats,
+          sendDevice: s.sendDevice,
+          loopbackDevice: String(cfg.voiceCall?.loopbackDevice || ''),
+          autoAnswer: cfg.voiceCall?.autoAnswer === true,
+          whitelist: Array.isArray(cfg.voiceCall?.whitelist) ? cfg.voiceCall.whitelist : [],
+          watcherOn: true,
+          turns: recentVoiceTurns()
+        });
+      }
+    },
+    {
+      method: 'GET', pattern: '/api/voice-call/devices',
+      handler: async ({ res, json }) => {
+        try {
+          const endpoints = await listRenderEndpoints();
+          return json(res, 200, { ok: true, endpoints });
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error), endpoints: [] });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/voice-call/config',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const patch = {};
+        if (typeof body?.loopbackDevice === 'string' && body.loopbackDevice.trim()) {
+          patch.loopbackDevice = body.loopbackDevice.trim();
+        }
+        if (typeof body?.autoAnswer === 'boolean') patch.autoAnswer = body.autoAnswer;
+        if (Array.isArray(body?.whitelist)) {
+          patch.whitelist = body.whitelist.map((x) => String(x).trim()).filter(Boolean).slice(0, 50);
+        }
+        if (!Object.keys(patch).length) return json(res, 200, { ok: false, error: '没有可保存的字段' });
+        updateConfig({ voiceCall: patch });
+        if (patch.loopbackDevice) resetVoiceCallSession();   // 下次 start 用新设备
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/voice-call/tone',
+      handler: async ({ res, json }) => {
+        try {
+          const r = await playCallTestTone();
+          return json(res, 200, r);
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/voice-call/start',
+      handler: async ({ res, json }) => {
+        try {
+          const s = getVoiceCallSession();
+          if (s.inCall) return json(res, 200, { ok: false, error: '通话已在进行中' });
+          const r = await s.start();
+          return json(res, 200, { ok: true, callId: r.callId, sendDevice: r.sendDevice });
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/voice-call/stop',
+      handler: async ({ res, json }) => {
+        try {
+          const s = getVoiceCallSession();
+          await s.stop('控制台挂断');
+          return json(res, 200, { ok: true });
+        } catch (error) {
+          return json(res, 200, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    // ── 语音（TTS 说 / ASR 听）───────────────────────────────────────────
+    // 语音区状态：开关/音色/服务商解析结果/冷却/ASR 插件是否可用。只读。
+    {
+      method: 'GET', pattern: '/api/speech/status',
+      handler: async ({ res, json }) => {
+        const cfg = getConfig();
+        const asrProviders = skillManager.getCapabilityProviders('media.transcribe');
+        let providerName = null;
+        try {
+          const pid = String(cfg.speech?.providerId || '').trim();
+          const p = pid
+            ? (cfg.providers || []).find((x) => x.id === pid)
+            : (cfg.providers || []).find((x => {
+                const k = String(cfg.dshProviderKeys?.[x.id] || x.apiKey || '').trim();
+                return String(x.baseURL || '').trim() && k;
+              }));
+          providerName = p ? (p.name || p.id) : (pid || null);
+        } catch { /* ignore */ }
+        // 引擎与能力矩阵（auto 时按当前 TTS 服务商 baseURL 识别）
+        let adapter = null;
+        try {
+          const ep = resolveSpeechEndpoint(cfg);
+          adapter = resolveAdapter(cfg, ep?.baseUrl || '');
+        } catch { adapter = resolveAdapter(cfg, ''); }
+        const caps = adapter?.capabilities || {};
+        return json(res, 200, {
+          ok: true,
+          enabled: cfg.tools?.speechVoice === true,
+          voices: adapter?.voices || [],
+          voice: cfg.speech?.tts?.voice || '茉莉',
+          mode: cfg.speech?.tts?.mode === 'clone' ? 'clone' : 'preset',
+          cloneRefReady: Boolean(readCloneRef(cfg)),
+          cloneRefFile: String(cfg.speech?.tts?.cloneRefFile || '').trim() || null,
+          providerId: cfg.speech?.providerId || '',
+          providerName,
+          cooldownMin: Math.max(0, Number(cfg.speech?.tts?.cooldownMin) || 0),
+          maxChars: Math.max(20, Number(cfg.speech?.tts?.maxChars) || 200),
+          asrEnabled: cfg.speech?.asr?.enabled !== false,
+          asrPluginReady: asrProviders.length > 0 && typeof asrProviders[0]?.fn === 'function',
+          // 多引擎（Phase A）
+          format: String(cfg.speech?.format || 'auto'),
+          formatResolved: adapter?.id || 'mimo',
+          formats: ADAPTERS.map((a) => ({ id: a.id, name: a.name })),
+          voiceInfo: adapter ? {
+            id: adapter.id,
+            name: adapter.name,
+            capabilities: caps,
+            capabilitiesText: capabilitiesText(adapter),
+            needs: adapter.needs || [],
+            defaults: adapter.defaults || {},
+            defaultVoice: adapter.defaultVoice,
+            cloneOnly: adapter.cloneOnly === true
+          } : null,
+          asrProviderId: String(cfg.speech?.asr?.providerId || ''),
+          groupId: String(cfg.speech?.groupId || ''),
+          // 本地歌声链（SVC）：enabled + 出歌引擎在线状态（在线才敢说"能唱"）
+          singing: await (async () => {
+            const enabled = singingEnabled(cfg);
+            if (!enabled) return { enabled: false, online: false };
+            const st = await getSingingEngine(cfg).probe(cfg);
+            return { enabled: true, online: !!st.online, base: st.base };
+          })(),
+          models: {
+            tts: String(cfg.speech?.models?.tts || ''),
+            ttsClone: String(cfg.speech?.models?.ttsClone || ''),
+            asr: String(cfg.speech?.models?.asr || '')
+          }
+        });
+      }
+    },
+
+    // 语音区设置保存（白名单字段）。speechVoice 是唯一总开关（tools.speechVoice）。
+    {
+      method: 'POST', pattern: '/api/speech/config',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const patch = { tools: {}, speech: { tts: {}, asr: {} } };
+        if (typeof body?.enabled === 'boolean') patch.tools.speechVoice = body.enabled;
+        if (typeof body?.providerId === 'string') patch.speech.providerId = body.providerId.trim();
+        if (typeof body?.voice === 'string' && body.voice.trim()) patch.speech.tts.voice = body.voice.trim();
+        for (const k of ['cooldownMin']) {
+          if (body?.[k] !== undefined && body[k] !== '') {
+            const n = Math.round(Number(body[k]));
+            if (Number.isFinite(n) && n >= 0) patch.speech.tts[k] = n;
+          }
+        }
+        if (body?.maxChars !== undefined && body.maxChars !== '') {
+          const n = Math.round(Number(body.maxChars));
+          if (Number.isFinite(n) && n >= 20 && n <= 2000) patch.speech.tts.maxChars = n;
+        }
+        if (typeof body?.asrEnabled === 'boolean') patch.speech.asr.enabled = body.asrEnabled;
+        // 多引擎（Phase A）：格式/ASR 服务商/引擎专属字段/模型名
+        if (typeof body?.format === 'string' && FORMAT_IDS.includes(body.format.trim())) {
+          patch.speech.format = body.format.trim() || 'auto';
+        }
+        if (typeof body?.asrProviderId === 'string') patch.speech.asr.providerId = body.asrProviderId.trim();
+        if (typeof body?.groupId === 'string') patch.speech.groupId = body.groupId.trim();
+        if (body?.models && typeof body.models === 'object') {
+          patch.speech.models = {
+            tts: String(body.models.tts || '').trim(),
+            ttsClone: String(body.models.ttsClone || '').trim(),
+            asr: String(body.models.asr || '').trim()
+          };
+        }
+        if (body?.mode === 'preset' || body?.mode === 'clone') {
+          // 切到 clone 模式但参考音频不存在 → 拒绝（否则 send_voice 会全挂）
+          if (body.mode === 'clone' && !readCloneRef(getConfig())) {
+            return json(res, 400, { ok: false, error: '还没有参考音频：先上传 3~10 秒的样本，再切换到克隆模式' });
+          }
+          patch.speech.tts.mode = body.mode;
+        }
+        const next = updateConfig(patch);
+        emit('status', { configUpdated: true });
+        return json(res, 200, {
+          ok: true,
+          enabled: next.tools?.speechVoice === true,
+          speech: next.speech
+        });
+      }
+    },
+
+    // 试听：文本 → TTS → data URL（控制台页面直接 <audio> 播放）。
+    // 这条接口不受 speechVoice 开关约束 —— 配置音色本来就要先听。
+    // 支持 style（语气口吻，自然语言）；clone 模式自动用参考音频（synthesize 内部判定）。
+    {
+      method: 'POST', pattern: '/api/speech/preview',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const text = String(body?.text ?? '').trim();
+        if (!text) return json(res, 400, { ok: false, error: '试听文本为空' });
+        try {
+          const { wav, voice, mode } = await synthesizeSpeech({
+            text,
+            style: typeof body?.style === 'string' && body.style.trim() ? body.style.trim() : null,
+            voice: typeof body?.voice === 'string' && body.voice.trim() ? body.voice.trim() : null
+          });
+          return json(res, 200, {
+            ok: true,
+            voice,
+            mode,
+            bytes: wav.length,
+            audioDataUrl: `data:audio/wav;base64,${wav.toString('base64')}`
+          });
+        } catch (e) {
+          return json(res, 502, { ok: false, error: String(e?.message ?? e) });
+        }
+      }
+    },
+
+    // ── 音色克隆：上传参考音频（3~10 秒样本，DataURL）─────────────────────
+    // 存 data/speech/clone-ref.<ext>，config 记文件名。无需训练 —— MiMo voiceclone
+    // 是"参考音频 + 台词"单次调用式，下次 synthesize 自动生效。
+    // 格式判定以**文件魔数嗅探**为准（sniffAudioExt）—— 浏览器对 .m4a/.aac 常标
+    // application/octet-stream，信任 DataURL 里的 MIME 会误拒（真实踩过）。
+    // 支持：wav / mp3 / ogg / m4a / aac（手机录音直传）。
+    {
+      method: 'POST', pattern: '/api/speech/clone-ref',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const m = /^data:(?:audio|application)\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(body?.audioDataUrl || ''));
+        if (!m) return json(res, 400, { ok: false, error: '音频格式不对（支持 wav / mp3 / ogg / m4a / aac 的 DataURL）' });
+        const buf = Buffer.from(m[1], 'base64');
+        if (buf.length < 8000) return json(res, 400, { ok: false, error: '音频太小了（不足 8KB），请录 3~10 秒清晰的样本' });
+        if (buf.length > 8 * 1024 * 1024) return json(res, 400, { ok: false, error: '音频太大（超过 8MB），截一段 3~10 秒的就好' });
+        const ext = sniffAudioExt(buf);
+        if (!ext) return json(res, 400, { ok: false, error: '认不出这个音频格式（魔数不匹配）——请用 wav / mp3 / ogg / m4a / aac' });
+        // MiMo voiceclone 只收 wav/mp3（HTTP 400 实测）——m4a/aac/ogg 转成 **PCM WAV**：
+        // 参考音频质量决定克隆上限，用有损低码率 mp3 会"机器感"加重（首版实测）。
+        let finalBuf = buf;
+        let finalExt = ext;
+        if (ext !== 'wav' && ext !== 'mp3') {
+          const wav = convertRefToWav(buf);
+          if (!wav) {
+            return json(res, 400, { ok: false, error: `参考音频是 ${ext}，但本机没装 ffmpeg 无法自动转换 —— 请转成 wav 或 mp3 再传` });
+          }
+          finalBuf = wav;
+          finalExt = 'wav';
+        }
+        try {
+          fs.mkdirSync(CLONE_REF_DIR, { recursive: true });
+          // 清掉旧格式残留，只保留当前一份
+          for (const f of ['clone-ref.wav', 'clone-ref.mp3', 'clone-ref.ogg', 'clone-ref.m4a', 'clone-ref.aac']) {
+            try { fs.rmSync(path.join(CLONE_REF_DIR, f), { force: true }); } catch { /* ignore */ }
+          }
+          const file = `clone-ref.${finalExt}`;
+          fs.writeFileSync(path.join(CLONE_REF_DIR, file), finalBuf);
+          updateConfig({ speech: { tts: { cloneRefFile: file } } });
+          emit('status', { configUpdated: true });
+          return json(res, 200, {
+            ok: true,
+            file,
+            bytes: finalBuf.length,
+            converted: finalExt !== ext ? `${ext} → mp3` : null
+          });
+        } catch (e) {
+          return json(res, 500, { ok: false, error: `保存失败：${e?.message ?? e}` });
+        }
+      }
+    },
+
+    // 删除参考音频（切回预置音色用）
+    {
+      method: 'DELETE', pattern: '/api/speech/clone-ref',
+      handler: async ({ res, json }) => {
+        try {
+          for (const f of ['clone-ref.wav', 'clone-ref.mp3', 'clone-ref.ogg', 'clone-ref.m4a', 'clone-ref.aac']) {
+            try { fs.rmSync(path.join(CLONE_REF_DIR, f), { force: true }); } catch { /* ignore */ }
+          }
+          updateConfig({ speech: { tts: { cloneRefFile: '', mode: 'preset' } } });
+          emit('status', { configUpdated: true });
+          return json(res, 200, { ok: true });
+        } catch (e) {
+          return json(res, 500, { ok: false, error: `删除失败：${e?.message ?? e}` });
+        }
+      }
+    },
+
+    // ── 外联（设备控制）─────────────────────────────────────────────────
+    // 设备状态（外联页展示 + 轮询）：在线设备 / 锁 / 预算 / 黑名单，只读。
+    {
+      method: 'GET', pattern: '/api/device/status',
+      handler: async ({ res, json }) => {
+        const cfg = getConfig();
+        let st;
+        try { st = await deviceManager.status(); }
+        catch (e) { return json(res, 200, { ok: true, devices: [], adbError: e?.message ?? String(e), enabled: deviceManager.enabled() }); }
+        return json(res, 200, {
+          ok: true,
+          ...st,
+          adbConfigured: String(cfg.device?.adbPath || '').trim() || null,
+          visionModel: String(cfg.api?.visionModel || '').trim(),
+          caps: deviceManager.caps(),
+          allowedSerials: Array.isArray(cfg.device?.allowedSerials) ? cfg.device.allowedSerials : [],
+          // 内置黑名单（带 name/warn 警示语）+ 被用户移除的项 —— 外联页渲染可勾选列表用
+          builtinBlocklist: BUILTIN_BLOCKLIST,
+          blocklistDisabled: Array.isArray(cfg.device?.blocklistDisabled) ? cfg.device.blocklistDisabled : []
+        });
+      }
+    },
+
+    // 外联页设置保存：只收白名单字段（deviceControl + device.* 的安全子集），
+    // 防止借这个接口写别的配置。数字字段做下限保护（0 = 关闭预算/不限时）。
+    {
+      method: 'POST', pattern: '/api/device/config',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const patch = { tools: {}, device: {} };
+        if (typeof body?.deviceControl === 'boolean') patch.tools.deviceControl = body.deviceControl;
+        const d = body?.device || {};
+        if (typeof d.adbPath === 'string') patch.device.adbPath = d.adbPath.trim();
+        if (Array.isArray(d.allowedSerials)) {
+          patch.device.allowedSerials = d.allowedSerials.map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+        }
+        for (const k of ['maxActionsPerRun', 'maxLooksPerRun', 'lockMinutes']) {
+          if (d[k] !== undefined && d[k] !== '') {
+            const n = Math.round(Number(d[k]));
+            if (Number.isFinite(n) && n > 0) patch.device[k] = n;
+          }
+        }
+        if (Array.isArray(d.blocklistPackages)) {
+          patch.device.blocklistPackages = d.blocklistPackages
+            .map((s) => String(s).trim()).filter((s) => /^[a-zA-Z][a-zA-Z0-9_.]*$/.test(s)).slice(0, 100);
+        }
+        // 被手动移除的内置黑名单项：只认内置表里真实存在的包名（防手滑写错包名
+        // 却以为移除了某个保护 —— 写错的直接丢弃）。
+        if (Array.isArray(d.blocklistDisabled)) {
+          const builtin = new Set(BUILTIN_BLOCKLIST.map((b) => b.pkg));
+          patch.device.blocklistDisabled = d.blocklistDisabled
+            .map((s) => String(s).trim()).filter((s) => builtin.has(s));
+        }
+        const next = updateConfig(patch);
+        if (patch.device.adbPath !== undefined) invalidateAdbCache();   // adb 路径改了就重新探测
+        emit('status', { configUpdated: true });
+        return json(res, 200, {
+          ok: true,
+          deviceControl: next.tools?.deviceControl === true,
+          device: next.device
+        });
+      }
+    },
+  ];
+}

@@ -1,0 +1,66 @@
+{
+  "id": "arknights-master",
+  "name": "明日方舟大师",
+  "version": "1.2.0",
+  "apiVersion": 1,
+  "category": "knowledge",
+  "description": "让机器人成为《明日方舟》行家：内置 PRTS Wiki 资料库（460 名干员图鉴、术语、职业与分支、养成机制、基建、集成战略等），能算公开招募标签、能搜 B 站攻略视频。默认【被 @ 或戳一戳才启用】——不被叫到时连工具都不出现；被叫到时才按行家水准作答，资料库里没有的实时检索 prts.wiki。",
+  "author": "AI 生成 · 资料来自 PRTS Wiki (https://prts.wiki)",
+  "enabledByDefault": true,
+  "permissions": ["web_fetch"],
+  "settings": {
+    "triggerMode": "被@或戳一戳时",
+    "graceMinutes": 3,
+    "allowNetwork": true,
+    "maxPageChars": 3000,
+    "searchLimit": 5,
+    "biliLimit": 5,
+    "includeSource": true
+  },
+  "configSchema": {
+    "triggerMode": {
+      "type": "enum",
+      "values": ["被@或戳一戳时", "聊到明日方舟时", "总是"],
+      "label": "什么时候启用",
+      "description": "默认「被@或戳一戳时」：只有群友 @ 机器人、拍一拍或私聊时，这些工具与大师提示词才生效，平时完全不打扰（也不占提示词）。「聊到明日方舟时」：群里只要聊到方舟/干员就自动启用。「总是」：任何时候都可用。"
+    },
+    "graceMinutes": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "label": "被叫到后的宽限时间（分钟）",
+      "description": "被 @ 之后这段时间内，同一个群里的后续追问仍然算「刚才叫过你」（默认 3 分钟）。填 0 = 每条消息都要重新 @。私聊不受此限制。"
+    },
+    "allowNetwork": {
+      "type": "boolean",
+      "label": "允许联网查 PRTS Wiki / B 站",
+      "description": "开启后可以实时检索 prts.wiki、搜索 B 站视频；关闭后只用内置资料库回答（公招计算、干员图鉴、术语机制都能离线用），但不认识的干员/活动会查不到，B 站搜索也会停用。"
+    },
+    "maxPageChars": {
+      "type": "number",
+      "label": "单次返回正文上限（字符）",
+      "description": "联网读取 PRTS 页面时最多回给模型多少字符，默认 3000。范围 500~12000：越大越详细，也越费 token。",
+      "min": 500,
+      "max": 12000
+    },
+    "searchLimit": {
+      "type": "number",
+      "label": "PRTS 默认检索条数",
+      "description": "prts_search 默认返回几条结果，默认 5。范围 1~10。",
+      "min": 1,
+      "max": 10
+    },
+    "biliLimit": {
+      "type": "number",
+      "label": "B 站搜索返回条数",
+      "description": "bilibili_search 默认返回几条视频，默认 5。范围 1~10：太多会占提示词，太少又容易挑不到合适的。",
+      "min": 1,
+      "max": 10
+    },
+    "includeSource": {
+      "type": "boolean",
+      "label": "资料里附 PRTS 链接",
+      "description": "开启后工具返回的资料会带上 https://prts.wiki 的来源链接，方便群友自己去看原页面。"
+    }
+  }
+}

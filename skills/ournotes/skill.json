@@ -1,0 +1,79 @@
+{
+  "id": "ournotes",
+  "name": "Our Notes 查询",
+  "version": "1.3.0",
+  "apiVersion": 1,
+  "category": "knowledge",
+  "description": "查询《BanG Dream! Our Notes》的曲目、谱面资料、卡牌、卡池、活动与主数据状态。数据来自社区主数据源 metadata.bdon.moe，图片直接引用 assets.bdon.moe。",
+  "author": "移植自 NeriWST/ournotes-qq-bot（MIT）",
+  "enabledByDefault": false,
+  "entry": "index.js",
+  "permissions": ["web_fetch"],
+  "capabilities": [],
+  "requires": [],
+  "settings": {
+    "region": "hk-tw-mo",
+    "assetLanguage": "zh-Hans",
+    "cacheTtlHours": 6,
+    "pageSize": 8,
+    "sendImages": true,
+    "maxImages": 3,
+    "cardImage": "thumbnail",
+    "cacheDir": ""
+  },
+  "configSchema": {
+    "region": {
+      "type": "enum",
+      "values": ["hk-tw-mo", "en", "kr", "jp"],
+      "label": "数据区域",
+      "description": "主数据的区域。hk-tw-mo 是默认区（对应素材服务的 tw）。"
+    },
+    "assetLanguage": {
+      "type": "enum",
+      "values": ["zh-Hans", "zh-Hant", "ja", "en", "ko"],
+      "label": "图片语言",
+      "description": "封面与卡面的语言版本。多数图片各语言相同，只有带字的图会不同。"
+    },
+    "cacheTtlHours": {
+      "type": "number",
+      "label": "缓存有效期（小时）",
+      "description": "超过这个时长会在下次查询时刷新。默认 6，与上游一致。"
+    },
+    "pageSize": {
+      "type": "number",
+      "label": "每页条数",
+      "description": "列表每页返回多少条。走文字列表，默认 8；上游的出图模式是 16。"
+    },
+    "sendImages": {
+      "type": "boolean",
+      "label": "发送封面与卡面",
+      "description": "开启后会把当页前几张图作为独立气泡发出。关掉就只回文字。"
+    },
+    "maxImages": {
+      "type": "number",
+      "label": "单次最多几张图",
+      "description": "防止一页封面把群刷屏，默认 3。"
+    },
+    "cardImage": {
+      "type": "enum",
+      "values": ["thumbnail", "full"],
+      "label": "卡面尺寸",
+      "description": "thumbnail 约 175 KB，full 约 880 KB。群里建议用 thumbnail。"
+    },
+    "cacheDir": {
+      "type": "string",
+      "label": "缓存目录",
+      "description": "留空使用 QQ Agent 数据目录下的 ournotes/。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "ournotes",
+        "title": "Our Notes 查询",
+        "priority": 40,
+        "content": "用户想查《BanG Dream! Our Notes》的数据时用这几个工具：查曲用 ournotes__song_search（歌名写中文、日文、英文或假名读音都行，也可以直接给曲目 ID，另可加等级筛选）；查某首歌的谱面等级与物量用 ournotes__chart_info（数字按曲目 ID 处理，100001 可以写成 1）；查卡用 ournotes__card_search（角色名、角色缩写 skk=祥子、tmr=灯、mtm=睦，或乐队名如「梦限大」）；查卡池用 ournotes__gacha_info（也能按角色名、缩写或乐队名查，例如「梦限大」「由乃」；会给出卡池名、主推卡以及它们的单抽出率）；查活动用 ournotes__event_info；问数据更新时间与总数用 ournotes__data_status。工具会自己把封面图、卡面图或卡池图作为独立气泡发出去，所以你只需要用文字把结果讲清楚，不要再输出图片链接，也不要复述图片内容。回答用什么语言由用户那句提问决定。三条硬规矩：卡池出率已经由工具按主数据的万分比权重算好，直接转述即可，不要自己再推算、加总或换算，并说明那是单抽概率、不含十连保底；活动时间串不带时区，原样转述即可，不要自行换算时区；预测线（ycx）上游仍然没有数据，直接说明暂未上线，不要编造。"
+      }
+    ]
+  }
+}

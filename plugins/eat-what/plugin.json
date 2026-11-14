@@ -1,0 +1,40 @@
+{
+  "id": "eat-what",
+  "name": "吃什么",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "从午餐、晚餐文本列表推荐餐馆类型，默认 3 个；支持群友明确添加、AI 语义识别、人设调用与弹窗编辑。按北京时间 16:00 分餐别。",
+  "author": "QQ Agent 用户",
+  "enabledByDefault": true,
+  "capabilities": ["message.trigger", "settings.text-document"],
+  "settings": {
+    "triggerWords": "吃什么\n吃啥\n午餐推荐\n晚餐推荐",
+    "optionCount": 3,
+    "learnFromChat": true,
+    "mealList": ""
+  },
+  "configSchema": {
+    "triggerWords": {
+      "type": "string",
+      "multiline": true,
+      "label": "触发关键词",
+      "description": "每行一个，也可用逗号分隔。留空关闭关键词匹配；人设仍可调用工具。关键词命中可在群聊中唤醒机器人。"
+    },
+    "optionCount": {
+      "type": "number",
+      "label": "推荐数量",
+      "description": "默认 3 个，范围 1–10；同次推荐不重复，列表不足时返回全部。"
+    },
+    "learnFromChat": {
+      "type": "boolean",
+      "label": "记住群友明确添加的餐馆",
+      "description": "AI 提取群友明确要求加入或记住的名称，写进餐馆文本。单纯提到或吃过某种食物不会自动保存。此类明确添加请求也可唤醒机器人。"
+    },
+    "mealList": {
+      "type": "internal",
+      "label": "午餐与晚餐文本",
+      "description": "直接读取文本文件编辑；按 [午餐]、[晚餐] 分区，每行一个名称。所有群共用这份餐馆类型列表。"
+    }
+  }
+}
