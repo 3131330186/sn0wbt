@@ -1834,3 +1834,180 @@ details.collapsible.coll-shut > summary::after { transform: rotate(0deg); }
   padding: 11px 12px; line-height: 1.5;
 }
 .webchat-hint { font-size: 11px; color: var(--tx3); padding: 0 18px 8px; background: var(--bg1); }
+
+/* ═════════════════════════════════════════════════════════════════════
+   concept3 · sn0wbot 视觉层（v0.8 UI 重设计）
+   布局：左侧图标导航轨（替代顶部页签条）；首页 = 驾驶舱。
+   视觉：雪夜底 + 冰青主色；通道各有主题色（QQ蓝/浏览器绿/邮件紫）。
+   本节只做"覆盖与新增"——上文所有既有页面的类名与结构保持不动，
+   既有测试（render/coverage）不受布局改动影响（jsdom 不解析 CSS）。
+   ═════════════════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme='dark'] {
+  /* sn0wbot 覆写：更深的雪夜底 + 冰青主色 */
+  --bg0: #090b0f;
+  --bg1: #0f1218;
+  --bg2: #161b24;
+  --bg3: #1f2734;
+  --ac: #52c7e8;
+  --ac-soft: rgba(82, 199, 232, .13);
+  --ac-line: rgba(82, 199, 232, .4);
+  /* 通道主题色（通道卡/状态灯语义用） */
+  --ch-qq: #12b7f5;
+  --ch-qq-soft: rgba(18, 183, 245, .12);
+  --ch-browser: #3ecf9a;
+  --ch-browser-soft: rgba(62, 207, 154, .12);
+  --ch-mail: #a78bfa;
+  --ch-mail-soft: rgba(167, 139, 250, .12);
+}
+
+[data-theme='light'] {
+  --ac: #1ea3c9;
+  --ac-soft: rgba(30, 163, 201, .12);
+  --ac-line: rgba(30, 163, 201, .4);
+}
+
+/* ── 品牌徽标：雪 ❄ ── */
+.brand::before { content: '❄'; background: linear-gradient(135deg, var(--ac), #7dd8f2); }
+
+/* ── 左侧导航轨 ── */
+#tabs {
+  position: fixed;
+  left: 0; top: 52px; bottom: 0;
+  width: 80px; height: auto;   /* 覆盖旧横条的 height:44px —— 显式高度会压过 top/bottom 拉伸 */
+  z-index: 4;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 8px 12px;
+  gap: 1px;
+  overflow-y: auto; overflow-x: hidden;
+  border-right: 1px solid var(--bd);
+  border-bottom: none;
+  background: var(--bg1);
+}
+#layout { margin-left: 80px; }
+.banner { margin-left: 80px; }   /* 横幅避开固定导航轨 */
+
+.rail-group {
+  flex: 0 0 auto;
+  padding: 9px 6px 3px;
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: .14em;
+  color: var(--tx3);
+  user-select: none;
+}
+.rail-group:first-child { padding-top: 4px; }
+.nav-spacer { height: 8px; flex: 0 0 auto; }
+
+.tab {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  height: auto; padding: 8px 2px 7px;
+  border-radius: var(--r-sm);
+  font-size: 10.5px; font-weight: 600;
+}
+.tab .tab-ic { font-size: 17px; line-height: 1; filter: grayscale(.4) opacity(.75); transition: filter var(--dur-fast) var(--ease-in-out), transform var(--dur-fast) var(--ease-out-quart); }
+.tab .tab-lb { line-height: 1; letter-spacing: .02em; }
+.tab:hover { color: var(--tx); background: var(--hover); }
+.tab:hover .tab-ic { filter: grayscale(.1) opacity(.95); transform: translateY(-1px); }
+/* 覆盖旧主题的下划线指示条 */
+.tab.active, .tab.on { color: var(--tx); box-shadow: none; background: var(--ac-soft); }
+.tab.active::after, .tab.on::after { display: none; }
+.tab.active::before, .tab.on::before {
+  content: '';
+  position: absolute; left: -8px; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 60%;
+  border-radius: 0 3px 3px 0;
+  background: var(--ac);
+}
+.tab.active .tab-ic, .tab.on .tab-ic { filter: none; transform: none; }
+.tab.active .tab-lb, .tab.on .tab-lb { color: var(--ac); }
+
+/* ── 驾驶舱 ── */
+.dash-wrap { max-width: 1080px; margin: 0 auto; padding: 26px 28px 40px; }
+.dash-hello { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.dash-hello h2 { font-size: 21px; letter-spacing: -.01em; }
+.dash-hello .dash-state { font-size: 12.5px; color: var(--tx2); }
+.dash-state .dot { margin-right: 5px; }
+
+.dash-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 12px; margin-top: 16px;
+}
+.dash-card {
+  position: relative;
+  padding: 14px 16px 12px;
+  background: var(--bg1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease-in-out), transform var(--dur-fast) var(--ease-out-quart), box-shadow var(--dur-base) var(--ease-in-out);
+}
+.dash-card:hover { border-color: var(--bd2); transform: translateY(-2px); box-shadow: var(--raise-1); }
+.dash-card::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--ch-color, var(--tx3));
+  opacity: .9;
+}
+.dash-card-head { display: flex; align-items: center; gap: 8px; }
+.dash-card-head b { font-size: 13.5px; }
+.dash-card-sub { font-size: 11px; color: var(--tx3); margin-top: 1px; }
+.dash-card-body { margin-top: 10px; font-size: 12px; color: var(--tx2); min-height: 16px; }
+
+/* 状态灯（脉冲呼吸只给"运行中"） */
+.status-light { width: 8px; height: 8px; border-radius: 50%; background: var(--tx3); flex: 0 0 auto; }
+.status-light.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); animation: dash-pulse 2.4s var(--ease-in-out) infinite; }
+.status-light.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.status-light.off { background: var(--tx3); }
+.status-light.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
+@keyframes dash-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--ok-soft); }
+  50% { box-shadow: 0 0 0 5px rgba(74, 175, 119, .18); }
+}
+
+/* 能力徽标行（通道卡内） */
+.dash-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.dash-caps .tag { font-size: 10px; padding: 1px 7px; }
+
+/* 用量条 */
+.dash-usage {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px;
+}
+.dash-usage .u-cell {
+  flex: 1 1 150px;
+  padding: 12px 16px;
+  background: var(--bg1); border: 1px solid var(--bd); border-radius: var(--r-md);
+}
+.dash-usage .u-num { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.dash-usage .u-lb { font-size: 11px; color: var(--tx3); margin-top: 2px; }
+
+/* 最近会话 */
+.dash-section { margin-top: 22px; }
+.dash-section > .dash-sec-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.dash-section h3 { font-size: 14px; }
+.dash-sec-head .link-btn { font-size: 12px; color: var(--ac); cursor: pointer; background: none; border: none; }
+.dash-sec-head .link-btn:hover { text-decoration: underline; }
+.dash-recent { display: flex; flex-direction: column; gap: 6px; }
+.dash-recent .r-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  background: var(--bg1); border: 1px solid var(--bd); border-radius: var(--r-sm);
+  font-size: 12.5px; color: var(--tx2);
+}
+.dash-recent .r-row b { color: var(--tx); font-weight: 600; }
+.dash-recent .r-row .r-time { margin-left: auto; color: var(--tx3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dash-empty { padding: 22px; text-align: center; color: var(--tx3); font-size: 12.5px; background: var(--bg1); border: 1px dashed var(--bd); border-radius: var(--r-md); }
+
+/* 窄屏兜底：轨道保持，页面自适应（既有 usage-pane 自身已响应式） */
+@media (max-width: 640px) {
+  #tabs { width: 64px; }
+  #layout { margin-left: 64px; }
+  .tab .tab-lb { display: none; }
+  .tab { padding: 9px 0; }
+}

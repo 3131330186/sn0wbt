@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QQ Agent</title>
+  <title>sn0wbot</title>
   <!-- 内容安全策略：控制台只应加载本机资源。
        首屏主题预置脚本必须内联（否则会闪白），用它的 sha256 hash 精确放行 ——
        不再用 'unsafe-inline'（页面多处 innerHTML 拼接，一旦任何一处被注入，
@@ -14,7 +14,8 @@
        故 script-src / connect-src / frame-src / worker-src 增列对应来源，
        其余仍锁死在 'self'。 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AusRctWgAU9T2N4jaRWpaSsObfjDZwj+sO1AcdUK5/s=' https://o.alicdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src 'self' data: blob:; connect-src 'self' https://*.aliyuncs.com https://*.alicdn.com; frame-src https://*.aliyuncs.com https://*.alicdn.com; worker-src 'self' blob: https://*.alicdn.com; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
-  <link rel="stylesheet" href="/style.css" />
+  <!-- 静态资源版本参数：改 style.css 后 bump v 值破浏览器缓存（Electron 壳与浏览器共用此文件） -->
+  <link rel="stylesheet" href="/style.css?v=0.8.0-ui1" />
   <script>
     /* 主题预置：在样式生效前就定好 data-theme，避免首屏闪白/闪黑。
        只认 dark / light，非法值回退暗色。
@@ -32,7 +33,7 @@
 </head>
 <body>
   <header id="topbar">
-    <div class="brand">QQ Agent <span class="brand-sub"></span></div>
+    <div class="brand">sn0wbot <span class="brand-sub"></span></div>
     <div class="top-status">
       <!-- 状态胶囊带：窄窗口下横向滚动（不折行、不裁切）；右侧控件固定可见 -->
       <div class="top-chips">
@@ -62,7 +63,7 @@
 
   <div id="loading-overlay" class="loading-overlay">
     <div class="loading-card">
-      <div class="loading-title">QQ Agent 正在启动</div>
+      <div class="loading-title">sn0wbot 正在启动</div>
       <div class="loading-sub" id="loading-status">正在启动 SnowLuma 与 OneBot 服务，请稍候…</div>
       <div class="loading-spinner"></div>
       <pre class="loading-logs" id="loading-logs"></pre>
@@ -70,18 +71,24 @@
   </div>
 
   <nav id="tabs">
-    <button class="tab" data-tab="device">外联</button>
-    <button class="tab" data-tab="voice">语音</button>
-    <button class="tab" data-tab="webchat">对话</button>
-    <button class="tab" data-tab="channels">通道</button>
-    <button class="tab active" data-tab="sessions">会话</button>
-    <button class="tab" data-tab="chats">存档</button>
-    <button class="tab" data-tab="memory">记忆</button>
-    <button class="tab" data-tab="usage">用量</button>
-    <button class="tab" data-tab="skills">技能</button>
-    <button class="tab" data-tab="plugins">插件</button>
-    <button class="tab" data-tab="snowluma">SnowLuma</button>
-    <button class="tab" data-tab="settings">设置</button>
+    <span class="rail-group">总览</span>
+    <button class="tab active" data-tab="dashboard" title="驾驶舱"><span class="tab-ic">🧭</span><span class="tab-lb">驾驶舱</span></button>
+    <span class="rail-group">通道</span>
+    <button class="tab" data-tab="device" title="外联"><span class="tab-ic">📱</span><span class="tab-lb">外联</span></button>
+    <button class="tab" data-tab="voice" title="语音"><span class="tab-ic">🎙️</span><span class="tab-lb">语音</span></button>
+    <button class="tab" data-tab="webchat" title="对话"><span class="tab-ic">🌐</span><span class="tab-lb">对话</span></button>
+    <button class="tab" data-tab="channels" title="通道"><span class="tab-ic">🔗</span><span class="tab-lb">通道</span></button>
+    <span class="rail-group">数据</span>
+    <button class="tab" data-tab="sessions" title="会话"><span class="tab-ic">💬</span><span class="tab-lb">会话</span></button>
+    <button class="tab" data-tab="chats" title="存档"><span class="tab-ic">🗂️</span><span class="tab-lb">存档</span></button>
+    <button class="tab" data-tab="memory" title="记忆"><span class="tab-ic">🧠</span><span class="tab-lb">记忆</span></button>
+    <button class="tab" data-tab="usage" title="用量"><span class="tab-ic">📊</span><span class="tab-lb">用量</span></button>
+    <span class="rail-group">扩展</span>
+    <button class="tab" data-tab="skills" title="技能"><span class="tab-ic">⚡</span><span class="tab-lb">技能</span></button>
+    <button class="tab" data-tab="plugins" title="插件"><span class="tab-ic">🧩</span><span class="tab-lb">插件</span></button>
+    <span class="rail-group">系统</span>
+    <button class="tab" data-tab="snowluma" title="QQ 协议端"><span class="tab-ic">🐧</span><span class="tab-lb">协议端</span></button>
+    <button class="tab" data-tab="settings" title="设置"><span class="tab-ic">⚙️</span><span class="tab-lb">设置</span></button>
     <!-- 原作者站点的社区入口（金句/意见/市场/人设广场/官网）已随其服务器下线一并移除，
          这里不再渲染任何按钮，避免出现点了没反应的死入口。 -->
     <span class="nav-spacer"></span>
@@ -108,8 +115,13 @@
       <div id="channels-page" class="usage-pane"></div>
     </section>
 
+    <!-- 驾驶舱：默认首页，全局状态一览 -->
+    <section id="view-dashboard" class="view active">
+      <div id="dashboard-page" class="usage-pane"></div>
+    </section>
+
     <!-- 会话视图 -->
-    <section id="view-sessions" class="view active">
+    <section id="view-sessions" class="view">
       <aside id="session-list" class="list-pane">
         <div class="list-head muted"><span id="session-count"></span><button class="list-head-btn" id="session-broadcast-btn" title="给选中的群/私聊批量发送一条消息">群发</button><button class="list-head-btn" id="session-clear-btn" title="清空全部已结束的会话记录（保留运行中/等待中的）">清空</button></div>
         <div id="session-items"></div>
@@ -193,6 +205,7 @@
   <script defer src="/app/14-voice.js"></script>
   <script defer src="/app/15-webchat.js"></script>
   <script defer src="/app/16-channels.js"></script>
+  <script defer src="/app/17-dashboard.js?v=0.8.0-ui1"></script>
   <script defer src="/app/11-init.js"></script>
 
   <!-- 阿里云验证码 2.0（意见收集/金句上传共用）：容器常驻；AliyunCaptchaConfig 与

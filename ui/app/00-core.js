@@ -472,7 +472,7 @@ function createVSlider({ mount, dual = false, low = 100, high = 10, onChange = n
 }
 
 const state = {
-  tab: 'sessions',
+  tab: 'dashboard',
   sessions: [],          // 摘要列表
   currentSessionId: null,
   sessionDetail: null,   // 完整记录
@@ -831,5 +831,6 @@ function switchTab(name) {
   if (name === 'voice') loadVoicePage();
   if (name === 'webchat') loadWebChat();
   if (name === 'channels') loadChannelsPage();
+  if (name === 'dashboard') loadDashboard();
   if (name === 'settings') loadSettings();
 }
