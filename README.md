@@ -11,6 +11,7 @@ channels/（QQ | browser | mail | ... 未来皆通道）
    → store → orchestrator → prompt → llm → tools → sender（现有引擎，通道无关）
 ```
 
+- **[架构大纲（给别人看的入口）](doc/ARCHITECTURE.md)** —— 全景图 / 通道契约 / 如何新增一个通道 / 路线图
 - `src/channels/types.js` —— 通道契约：能力声明、结构化错误（`ChannelError`）、出站状态
 - `src/channels/manager.js` —— 注册 / 启停 / 入站分发 / 出站路由唯一入口
 - `src/channels/qq/` —— 第一个通道，包装 OneBot v11 客户端（SnowLuma / NapCat 皆协议端）
