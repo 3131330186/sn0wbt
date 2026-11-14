@@ -1845,31 +1845,34 @@ details.collapsible.coll-shut > summary::after { transform: rotate(0deg); }
 
 :root,
 [data-theme='dark'] {
-  /* sn0wbot 覆写：更深的雪夜底 + 冰青主色 */
-  --bg0: #090b0f;
-  --bg1: #0f1218;
-  --bg2: #161b24;
-  --bg3: #1f2734;
-  --ac: #52c7e8;
-  --ac-soft: rgba(82, 199, 232, .13);
-  --ac-line: rgba(82, 199, 232, .4);
+  /* sn0wbot 覆写：深雪夜底 + 多巴胺主色（粉→橙渐变交互色，通道各撞色） */
+  --bg0: #0a0b10;
+  --bg1: #101218;
+  --bg2: #171a23;
+  --bg3: #20242f;
+  --ac: #ff5da2;
+  --ac-soft: rgba(255, 93, 162, .13);
+  --ac-line: rgba(255, 93, 162, .42);
+  /* 多巴胺渐变 */
+  --grad-brand: linear-gradient(135deg, #ff5da2, #ff9d5c 45%, #52c7e8);
+  --grad-accent: linear-gradient(135deg, #ff5da2, #ff9d5c);
   /* 通道主题色（通道卡/状态灯语义用） */
-  --ch-qq: #12b7f5;
-  --ch-qq-soft: rgba(18, 183, 245, .12);
-  --ch-browser: #3ecf9a;
-  --ch-browser-soft: rgba(62, 207, 154, .12);
-  --ch-mail: #a78bfa;
-  --ch-mail-soft: rgba(167, 139, 250, .12);
+  --ch-qq: #29b6ff;
+  --ch-qq-soft: rgba(41, 182, 255, .12);
+  --ch-browser: #2ee6a8;
+  --ch-browser-soft: rgba(46, 230, 168, .12);
+  --ch-mail: #c084fc;
+  --ch-mail-soft: rgba(192, 132, 252, .12);
 }
 
 [data-theme='light'] {
-  --ac: #1ea3c9;
-  --ac-soft: rgba(30, 163, 201, .12);
-  --ac-line: rgba(30, 163, 201, .4);
+  --ac: #e0447f;
+  --ac-soft: rgba(224, 68, 127, .12);
+  --ac-line: rgba(224, 68, 127, .4);
 }
 
-/* ── 品牌徽标：雪 ❄ ── */
-.brand::before { content: '❄'; background: linear-gradient(135deg, var(--ac), #7dd8f2); }
+/* ── 品牌徽标：雪 ❄（多巴胺渐变） ── */
+.brand::before { content: '❄'; background: var(--grad-brand); }
 
 /* ── 左侧导航轨 ── */
 #tabs {
@@ -1898,6 +1901,12 @@ details.collapsible.coll-shut > summary::after { transform: rotate(0deg); }
   user-select: none;
 }
 .rail-group:first-child { padding-top: 4px; }
+/* 多巴胺：每组标签一个色 */
+span.rail-group:nth-of-type(1) { color: #52c7e8; }   /* 总览 青 */
+span.rail-group:nth-of-type(2) { color: #2ee6a8; }   /* 通道 绿 */
+span.rail-group:nth-of-type(3) { color: #ff9d5c; }   /* 数据 橙 */
+span.rail-group:nth-of-type(4) { color: #c084fc; }   /* 扩展 紫 */
+span.rail-group:nth-of-type(5) { color: #ff5da2; }   /* 系统 粉 */
 .nav-spacer { height: 8px; flex: 0 0 auto; }
 
 .tab {
@@ -1910,19 +1919,12 @@ details.collapsible.coll-shut > summary::after { transform: rotate(0deg); }
 .tab .tab-lb { line-height: 1; letter-spacing: .02em; }
 .tab:hover { color: var(--tx); background: var(--hover); }
 .tab:hover .tab-ic { filter: grayscale(.1) opacity(.95); transform: translateY(-1px); }
-/* 覆盖旧主题的下划线指示条 */
-.tab.active, .tab.on { color: var(--tx); box-shadow: none; background: var(--ac-soft); }
+/* 覆盖旧主题的下划线指示条；多巴胺：激活态渐变胶囊 */
+.tab.active, .tab.on { color: #fff; box-shadow: none; background: var(--grad-accent); }
 .tab.active::after, .tab.on::after { display: none; }
-.tab.active::before, .tab.on::before {
-  content: '';
-  position: absolute; left: -8px; top: 50%;
-  transform: translateY(-50%);
-  width: 3px; height: 60%;
-  border-radius: 0 3px 3px 0;
-  background: var(--ac);
-}
+.tab.active::before, .tab.on::before { display: none; }
 .tab.active .tab-ic, .tab.on .tab-ic { filter: none; transform: none; }
-.tab.active .tab-lb, .tab.on .tab-lb { color: var(--ac); }
+.tab.active .tab-lb, .tab.on .tab-lb { color: #fff; }
 
 /* ── 驾驶舱 ── */
 .dash-wrap { max-width: 1080px; margin: 0 auto; padding: 26px 28px 40px; }
@@ -1984,8 +1986,41 @@ details.collapsible.coll-shut > summary::after { transform: rotate(0deg); }
 .dash-usage .u-num { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .dash-usage .u-lb { font-size: 11px; color: var(--tx3); margin-top: 2px; }
 
-/* 最近会话 */
-.dash-section { margin-top: 22px; }
+/* ── 多巴胺细节 ────────────────────────────────────────────────
+   驾驶舱标题渐变字；通道卡悬浮带各自色光；用量格五色各自成格 */
+.dash-hello h2 {
+  background: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.dash-card { border-left-width: 3px; }
+.dash-card:hover {
+  border-color: var(--ch-color, var(--bd2));
+  box-shadow: 0 8px 26px -8px var(--ch-color, transparent);
+  transform: translateY(-2px);
+}
+.dash-usage .u-cell { border-left: 3px solid var(--u, var(--bd2)); background: color-mix(in srgb, var(--u, var(--bg1)) 6%, var(--bg1)); }
+.dash-usage .u-cell:nth-child(1) { --u: #ff5da2; }   /* 成本 粉 */
+.dash-usage .u-cell:nth-child(2) { --u: #52c7e8; }   /* 对话 青 */
+.dash-usage .u-cell:nth-child(3) { --u: #ff9d5c; }   /* tokens 橙 */
+.dash-usage .u-cell:nth-child(4) { --u: #a3e635; }   /* 缓存 青柠 */
+.dash-usage .u-cell:nth-child(5) { --u: #c084fc; }   /* 搜索 紫 */
+.dash-usage .u-num { color: var(--u, var(--tx)); }
+
+/* ── 顶栏横幅改造：从"整条黄胶带"变成悬浮渐变提示卡 ──
+   语义不变（仍如实显示连接/配置状态），观感融入多巴胺体系 */
+.banner {
+  margin: 10px 16px 2px 96px;
+  padding: 9px 16px;
+  border: 1px solid rgba(255, 157, 92, .38);
+  border-radius: var(--r-md);
+  background: linear-gradient(90deg, rgba(255, 93, 162, .12), rgba(255, 157, 92, .10));
+  color: #ffc9a3;
+  box-shadow: 0 2px 14px -6px rgba(255, 157, 92, .35);
+}
+.banner a { color: #52c7e8; }
+.banner.hidden { margin: 0; }
 .dash-section > .dash-sec-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
