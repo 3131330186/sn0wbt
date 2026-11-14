@@ -55,7 +55,7 @@
     "setup": "node scripts/setup.mjs",
     "setup:check": "node scripts/setup.mjs --check",
     "setup:napcat": "node scripts/setup-napcat.mjs",
-    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-delete-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/channels-test.mjs && node test/tools-skill-audit.mjs --hermetic && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/wake-semantics-test.mjs && node test/store-persist-test.mjs && node test/session-days-prune-test.mjs && node test/vision-model-routing-test.mjs && node test/device-bridge-test.mjs && node test/abort-guard-test.mjs && node test/voice-call-probe-test.mjs && node test/voice-call-session-test.mjs && node test/voice-call-autoanswer-test.mjs && node test/voice-singing-test.mjs && node test/speech-test.mjs && node test/speech-adapters-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/webchat-test.mjs && node test/webchat-remote-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/web-search-parse.mjs && node test/model-switch-key-test.mjs",
+    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-delete-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/channels-test.mjs && node test/browser-channel-test.mjs && node test/mail-channel-test.mjs && node test/tools-skill-audit.mjs --hermetic && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/wake-semantics-test.mjs && node test/store-persist-test.mjs && node test/session-days-prune-test.mjs && node test/vision-model-routing-test.mjs && node test/device-bridge-test.mjs && node test/abort-guard-test.mjs && node test/voice-call-probe-test.mjs && node test/voice-call-session-test.mjs && node test/voice-call-autoanswer-test.mjs && node test/voice-singing-test.mjs && node test/speech-test.mjs && node test/speech-adapters-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/webchat-test.mjs && node test/webchat-remote-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/web-search-parse.mjs && node test/model-switch-key-test.mjs",
     "test:whitelist": "node test/onebot-whitelist-test.mjs",
     "test:sticker": "node test/sticker-collect-test.mjs",
     "test:msgid": "node test/message-id-test.mjs",
@@ -84,7 +84,10 @@
     "call": "node scripts/voice-call-run.mjs"
   },
   "dependencies": {
+    "imapflow": "^2.11.0",
     "js-yaml": "^5.4.1",
+    "nodemailer": "^10.5.0",
+    "playwright-core": "^1.65.1",
     "undici": "^6.28.0",
     "ws": "^8.18.0"
   },

@@ -493,6 +493,31 @@ export const DEFAULT_CONFIG = {
     theme: 'dark',
     showVision: true,         // 模型目录显示图片输入能力徽标
     refreshMs: 15000          // 界面轮询间隔
+  },
+  // ── 通道配置（v0.8 · sn0wbot）────────────────────────────────────────
+  // 每个非 QQ 通道一个切片。enabled 默认 false：没配置就保持安静 ——
+  // 通道注册但 startAll 不发起连接，状态如实 stopped；对应工具返回
+  // 结构化提示（不伪造成功）。用户显式 enabled 后才真正连接。
+  channels: {
+    browser: {
+      // 浏览器需以远程调试模式启动后通道才能连上：
+      //   msedge.exe --remote-debugging-port=9222（或 chrome 同参数）
+      enabled: false,
+      cdpUrl: 'http://127.0.0.1:9222',
+      readLimit: 8000,          // readPage 正文截断（字符数，防 token 失控）
+      navTimeoutMs: 30000,      // 页面导航超时
+      actionTimeoutMs: 10000    // 单次点击/填充超时
+    },
+    mail: {
+      enabled: false,
+      pollSeconds: 60,          // IMAP 轮询间隔
+      imap: { host: '', port: 993, tls: true, user: '', pass: '' },
+      smtp: { host: '', port: 465, tls: true, user: '', pass: '' },
+      // 入站白名单（正则字符串数组，匹配发件人地址）。空 = 邮件照收照入站管道
+      // 但打 unverified 戳（防陌生人诱导机器人执行任务由 allowedFrom 门控）。
+      allowedFrom: [],
+      maxBodyChars: 12000       // 入站正文截断
+    }
   }
 };
 
