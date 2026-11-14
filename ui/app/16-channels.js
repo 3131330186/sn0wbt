@@ -95,5 +95,4 @@ function loadChannelsPage() {
   // 本页停留时轻轮询（与外联页同款：离开即停）
   if (channelsTimer) clearInterval(channelsTimer);
   channelsTimer = setInterval(() => refreshChannels({ quiet: true }), 8000);
-  channelsTimer.unref?.?.();
 }
