@@ -32,7 +32,7 @@ npm start       # Electron 桌面版
 <a id="qq-agent个人维护副本"></a>
 # QQ Agent（个人维护副本）
 
-[![CI](https://github.com/3131330186/qqagent/actions/workflows/ci.yml/badge.svg)](https://github.com/3131330186/qqagent/actions/workflows/ci.yml)
+[![CI](https://github.com/3131330186/sn0wbt/actions/workflows/ci.yml/badge.svg)](https://github.com/3131330186/sn0wbt/actions/workflows/ci.yml)
 
 > **这不是官方仓库。** 上游 [`Kondius/qq-agent`](https://github.com/Kondius/qq-agent) 已于 2026 年 10 月前后被删除（GitHub 返回 404），原作者不再维护。
 > 本仓库 **`Nakie-zjm/qq-agent-maintained`** 是第三方个人维护副本，只为自用而修：会修自己遇到的问题，但**不保证**及时响应 issue、**不保证**与任何版本兼容、**不保证**跟进新功能。
