@@ -27,11 +27,13 @@ function renderDashChannelCard(ch) {
 
   const channelColor = { qq: 'var(--ch-qq)', browser: 'var(--ch-browser)', mail: 'var(--ch-mail)' }[ch.id] ?? 'var(--tx3)';
   const channelIcon = { qq: '💬', browser: '🌐', mail: '📧' }[ch.id] ?? '🔌';
+  // 卡片链接式：每个通道直达自己的管理页（有专属页的直达，没有的进通道总览）
+  const jumpTarget = { qq: 'snowluma', browser: 'channels', mail: 'channels' }[ch.id] ?? 'channels';
   const caps = (ch.capabilities ?? []).slice(0, 4);
   const capNames = { message: '消息', media: '媒体', sticker: '表情', voice: '语音', poke: '互动', history: '历史', control: '操控', verifiedSender: '可信身份' };
 
   return `
-    <div class="dash-card" data-tab-jump="channels" style="--ch-color: ${channelColor}">
+    <div class="dash-card" data-tab-jump="${jumpTarget}" style="--ch-color: ${channelColor}">
       <div class="dash-card-head">
         <span class="dash-ic-chip">${channelIcon}</span>
         <b>${esc(ch.label)}</b>
@@ -136,9 +138,10 @@ function buildDashSkeleton() {
         <div class="dash-recent" id="dash-recent"></div>
       </div>
     </div>`;
-  // 通道卡整块代理点击 → 通道页（数据节点轮询替换不丢绑定）
+  // 通道卡整块代理点击 → 按卡片上的直达目标跳页（数据节点轮询替换不丢绑定）
   document.getElementById('dash-channels')?.addEventListener('click', (e) => {
-    if (e.target.closest('.dash-card')) switchTab('channels');
+    const card = e.target.closest('.dash-card');
+    if (card) switchTab(card.dataset.tabJump ?? 'channels');
   });
   document.getElementById('dash-more-sessions')?.addEventListener('click', () => switchTab('sessions'));
 }
