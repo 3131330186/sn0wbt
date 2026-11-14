@@ -354,6 +354,10 @@ export async function bootApp({ config = {}, script = [] } = {}) {
       merged[key] = { ...baseConfig[key], ...config[key] };
     }
   }
+  // sn0wbot v0.8：QQ 通道默认后端是 UIA 反向服务端（不外连）；本 harness 的 40+ 套
+  // 老测试全部基于『假 SnowLuma WS 服务端』模式，这里统一钉回 napcat 后端，
+  // 让 onebot.js 照常连入假服务端。UIA 后端自己的密闭测试见 qq-uia-backend-test。
+  merged.channels = { ...(merged.channels ?? {}), qq: { ...(merged.channels?.qq ?? {}), backend: 'napcat' } };
   writeConfig(dataDir, merged);
 
   const { createApp } = await import('../src/app.js');

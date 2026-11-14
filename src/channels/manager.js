@@ -154,7 +154,8 @@ export class ChannelManager {
 
 /** 内置通道注册表：新通道在此追加一行（配置切片自 config.channels.<id> 取）。 */
 export function registerBuiltinChannels(manager, { config } = {}) {
-  manager.register(new QQChannel({ config: config?.snowluma ?? config }));
+  // QQ 通道配置 = 自身切片（backend/uiaWsPort/selfId）+ 旧 SnowLuma 连接参数（napcat 后端用）
+  manager.register(new QQChannel({ config: { ...(config?.snowluma ?? {}), ...(config?.channels?.qq ?? {}) } }));
   manager.register(new BrowserChannel({ config: config?.channels?.browser }));
   manager.register(new MailChannel({ config: config?.channels?.mail }));
   return manager;

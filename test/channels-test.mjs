@@ -184,11 +184,11 @@ await c.check('METHOD_CAPABILITY：sendText/message 与 sendPoke/poke 的映射�
 // ── 7. QQ 通道本体 ──────────────────────────────────────────────────────
 await c.check('QQChannel：配置切片映射到 OneBotClient（wsUrl/httpUrl/token）', () => {
   const ch = new QQChannel({
-    config: { wsUrl: 'ws://127.0.0.1:39999', httpUrl: 'http://127.0.0.1:39998/', accessToken: 'tok-ws', httpAccessToken: 'tok-http' }
+    config: { backend: 'napcat', wsUrl: 'ws://127.0.0.1:39999', httpUrl: 'http://127.0.0.1:39998/', accessToken: 'tok-ws', httpAccessToken: 'tok-http' }
   });
   assert.equal(ch.id, 'qq');
   assert.ok(ch.capabilities.includes(CAPABILITIES.VERIFIED_SENDER));
-  assert.ok(ch.client instanceof OneBotClient);
+  assert.ok(ch.client instanceof OneBotClient, "napcat 后端 = OneBotClient");
   assert.equal(ch.client.wsUrl, 'ws://127.0.0.1:39999');
   assert.equal(ch.client.httpUrl, 'http://127.0.0.1:39998');   // 尾斜杠被剥离
   assert.equal(ch.client.accessToken, 'tok-ws');
@@ -197,7 +197,7 @@ await c.check('QQChannel：配置切片映射到 OneBotClient（wsUrl/httpUrl/to
 
 await c.check('QQChannel：autoConnect=false 时 start 不发起连接，事件经 manager 分发', async () => {
   const m = new ChannelManager({ log: () => {} });
-  m.register(new QQChannel({ config: { wsUrl: 'ws://127.0.0.1:39999' } }));
+  m.register(new QQChannel({ config: { backend: 'napcat', wsUrl: 'ws://127.0.0.1:39999' } }));
   const seen = [];
   m.onInbound((record) => seen.push(record));
   await m.startAll({ autoConnect: false });   // 不连真实/不存在端口，纯密闭
@@ -211,11 +211,16 @@ await c.check('QQChannel：autoConnect=false 时 start 不发起连接，事件�
   assert.equal(seen[1].channelId, 'qq');
 });
 
-await c.check('registerBuiltinChannels：默认注册 qq 通道（config.snowluma 切片）', () => {
+await c.check('registerBuiltinChannels：默认注册 qq 通道（uia 后端），snowluma 切片并入 napcat 模式', async () => {
   const m = new ChannelManager({ log: () => {} });
-  registerBuiltinChannels(m, { config: { snowluma: { wsUrl: 'ws://127.0.0.1:39997' } } });
+  registerBuiltinChannels(m, { config: { snowluma: { wsUrl: 'ws://127.0.0.1:39997' }, channels: { qq: { backend: 'napcat', uiaWsPort: 17399 } } } });
   const qq = m.get('qq');
+  assert.equal(qq.backend, 'napcat');
   assert.equal(qq.client.wsUrl, 'ws://127.0.0.1:39997');
+  const m2 = new ChannelManager({ log: () => {} });
+  registerBuiltinChannels(m2, { config: { channels: { qq: { backend: 'uia' } } } });
+  const { OneBotReverseServer } = await import('../src/channels/qq/reverse_server.js');
+  assert.ok(m2.get('qq').client instanceof OneBotReverseServer);
 });
 
 c.finish();

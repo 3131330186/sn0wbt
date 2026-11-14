@@ -499,6 +499,14 @@ export const DEFAULT_CONFIG = {
   // 通道注册但 startAll 不发起连接，状态如实 stopped；对应工具返回
   // 结构化提示（不伪造成功）。用户显式 enabled 后才真正连接。
   channels: {
+    qq: {
+      // QQ 通道后端（2026-11-15 风控事件后默认 UIA）：
+      //   uia    = 反向 WS 服务端 + UIA 桥接（驱动正常登录的官方 QQ 客户端，风控暴露最小）
+      //   napcat = NapCat 协议端（hook，实时完整事件流；小号已被风控，暂不推荐）
+      backend: 'uia',
+      uiaWsPort: 11229,         // 核心监听 ws://127.0.0.1:11229/ws，桥接连入（对齐桥接示例配置）
+      selfId: ''                // 小号 QQ 号（桥接 get_login_info 的兜底）
+    },
     browser: {
       // 浏览器需以远程调试模式启动后通道才能连上：
       //   msedge.exe --remote-debugging-port=9222（或 chrome 同参数）

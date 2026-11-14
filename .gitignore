@@ -48,3 +48,8 @@ release/
 .env.local
 
 .goal-baseline/
+
+# 本地桥接与协议端运行时（第三方/二进制，不进库）
+bridges/
+napcat/
+tmp-*.mjs

@@ -12,6 +12,7 @@
 //     换后端 = 换 wsUrl/httpUrl/token —— 本通道与 onebot.js 不感知差异，
 //     具体差异核对见 DESIGN.md P1。
 import { OneBotClient } from '../../onebot.js';
+import { OneBotReverseServer } from './reverse_server.js';
 import { CAPABILITIES } from '../types.js';
 
 export const QQ_CHANNEL_ID = 'qq';
@@ -19,7 +20,8 @@ export const QQ_CHANNEL_ID = 'qq';
 export class QQChannel {
   id = QQ_CHANNEL_ID;
   label = 'QQ';
-  // OneBot v11 协议端提供真实消息 ID 与发送者 QQ 号 → 可验证发送者
+  // OneBot v11 提供真实消息 ID 与发送者 QQ 号 → 可验证发送者。
+  // ⚠️ UIA 后端下发送者身份与消息 ID 由桥接尽力而为，confidence 口径收紧。
   capabilities = [
     CAPABILITIES.MESSAGE,
     CAPABILITIES.MEDIA,
@@ -32,8 +34,10 @@ export class QQChannel {
 
   status = 'stopped';
   lastStatus = null;
+  /** 'uia'（反向 WS 服务端，桥接连入，默认）| 'napcat'（协议端，可选） */
+  backend = 'uia';
 
-  /** OneBotClient（协议面）。app.js 的 `onebot` 变量即此引用。 */
+  /** 协议面：UIA=OneBotReverseServer / napcat=OneBotClient。app.js 的 `onebot` 变量即此引用。 */
   client = null;
 
   #dispatchInbound = null;
@@ -41,26 +45,39 @@ export class QQChannel {
 
   /**
    * @param {object} opts
-   * @param {object} opts.config SnowLuma/NapCat 配置切片（wsUrl/httpUrl/accessToken/httpAccessToken）
+   * @param {object} opts.config QQ 通道配置切片（backend/uiaWsPort/selfId 或 snowluma.* 连接参数）
    */
   constructor({ config } = {}) {
     const s = config ?? {};
+    this.backend = s.backend === 'napcat' ? 'napcat' : 'uia';
     // 客户端必须构造期就绪：app.js 在通道 start()（连接期）之前就要把
     // client 引用注入 sender/stickers/orchestrator 等子系统。
-    this.client = new OneBotClient({
-      wsUrl: s.wsUrl,
-      httpUrl: s.httpUrl,
-      accessToken: s.accessToken,
-      httpToken: s.httpAccessToken || s.accessToken,
-      // start() 之前事件无处可去（也不该有：还没 connect）；start 后经 manager 分发
-      onEvent: (event) => this.#dispatchInbound?.(event)
-    });
+    if (this.backend === 'uia') {
+      // UIA 桥接后端：核心起反向 WS 服务端，桥接（驱动正常登录的官方 QQ 客户端）
+      // 以 OneBot v11 客户端身份连入。风控暴露最小（2026-11-15 起的默认路线）。
+      this.client = new OneBotReverseServer({
+        port: s.uiaWsPort,
+        host: s.uiaHost,
+        selfIdHint: s.selfId,
+        onEvent: (event) => this.#dispatchInbound?.(event)
+      });
+    } else {
+      // NapCat/SnowLuma 协议端后端（可选路线）
+      this.client = new OneBotClient({
+        wsUrl: s.wsUrl,
+        httpUrl: s.httpUrl,
+        accessToken: s.accessToken,
+        httpToken: s.httpAccessToken || s.accessToken,
+        // start() 之前事件无处可去（也不该有：还没 connect）；start 后经 manager 分发
+        onEvent: (event) => this.#dispatchInbound?.(event)
+      });
+    }
   }
 
   /**
-   * 启动通道：接线入站/状态回调并连接协议端。
+   * 启动通道：接线入站/状态回调并启动后端。
    * @param {object} ctx { dispatchInbound, reportStatus, autoConnect=true }
-   * @returns {Promise} connect() 的承诺（connect 内部自带退避重连循环）
+   * @returns {Promise} 连接/监听就绪的承诺
    */
   async start(ctx) {
     const { dispatchInbound, reportStatus, autoConnect = true } = ctx ?? {};
@@ -74,9 +91,9 @@ export class QQChannel {
     if (this.#offStatus) { this.#offStatus(); this.#offStatus = null; }
     this.#dispatchInbound = null;
     // close() 幂等：core 已在 app.stop 直调过它的情况下不会双关出问题
-    try { this.client?.close(); } catch { /* 已关闭即目标态 */ }
+    try { await this.client?.close?.(); } catch { /* 已关闭即目标态 */ }
   }
 
-  /** 通道级主动重连（管理接口/未来 UI 用；退避清零语义见 onebot.js reconnect）。 */
-  reconnect() { return this.client?.reconnect(); }
+  /** 通道级主动重连（管理接口/未来 UI 用；语义见各后端实现）。 */
+  reconnect() { return this.client?.reconnect?.(); }
 }
