@@ -33,15 +33,16 @@ function renderDashChannelCard(ch) {
   const capNames = { message: '消息', media: '媒体', sticker: '表情', voice: '语音', poke: '互动', history: '历史', control: '操控', verifiedSender: '可信身份' };
 
   return `
-    <div class="dash-card" data-tab-jump="${jumpTarget}" style="--ch-color: ${channelColor}">
+    <div class="dash-card" data-channel-id="${esc(ch.id)}" data-tab-jump="${jumpTarget}" style="--ch-color: ${channelColor}">
       <div class="dash-card-head">
         <span class="dash-ic-chip">${channelIcon}</span>
         <b>${esc(ch.label)}</b>
         <span class="status-light ${light}"></span>
-        <span class="dash-card-sub">${esc(ch.id)}</span>
+        <span class="dash-manage" data-manage="${jumpTarget}" title="管理设置">⚙</span>
       </div>
       <div class="dash-card-body">${esc(detail || '—')}</div>
       <div class="dash-caps">${caps.map((cap) => `<span class="tag">${esc(capNames[cap] ?? cap)}</span>`).join('')}</div>
+      <div class="dash-launch-hint">点击启动</div>
     </div>`;
 }
 
@@ -138,10 +139,26 @@ function buildDashSkeleton() {
         <div class="dash-recent" id="dash-recent"></div>
       </div>
     </div>`;
-  // 通道卡整块代理点击 → 按卡片上的直达目标跳页（数据节点轮询替换不丢绑定）
-  document.getElementById('dash-channels')?.addEventListener('click', (e) => {
+  // 通道卡点击 = 启动器：POST launch 拉起对应软件；⚙ 角标 = 跳管理页。
+  // 事件委托绑一次，数据节点轮询替换不丢绑定。
+  document.getElementById('dash-channels')?.addEventListener('click', async (e) => {
     const card = e.target.closest('.dash-card');
-    if (card) switchTab(card.dataset.tabJump ?? 'channels');
+    if (!card) return;
+    if (e.target.closest('.dash-manage')) { switchTab(card.dataset.tabJump ?? 'channels'); return; }
+    const chId = card.dataset.channelId;
+    if (!chId) return;
+    try {
+      await api(`/api/channels/${encodeURIComponent(chId)}/launch`, { method: 'POST' });
+      const body = card.querySelector('.dash-card-body');
+      if (body && !body.dataset.launchFlash) {
+        body.dataset.launchFlash = '1';
+        body.dataset.old = body.textContent;
+        body.textContent = '已启动 ✓';
+        setTimeout(() => { body.textContent = body.dataset.old ?? ''; delete body.dataset.launchFlash; }, 1600);
+      }
+    } catch (error) {
+      showAppAlert(`启动 ${chId} 失败：${error?.message ?? error}`);
+    }
   });
   document.getElementById('dash-more-sessions')?.addEventListener('click', () => switchTab('sessions'));
 }

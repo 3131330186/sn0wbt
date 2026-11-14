@@ -1976,7 +1976,18 @@ span.rail-group:nth-of-type(5) { color: #ff5da2; }   /* 系统 粉 */
 }
 .dash-card-head { display: flex; align-items: center; gap: 8px; }
 .dash-card-head b { font-size: 13.5px; }
+.dash-card-head b { margin-right: auto; }
 .dash-card-sub { font-size: 11px; color: var(--tx3); margin-top: 1px; }
+.dash-manage {
+  flex: 0 0 auto; font-size: 13px; color: var(--tx3);
+  padding: 2px 6px; border-radius: var(--r-xs);
+}
+.dash-manage:hover { color: var(--ac); background: var(--hover); }
+.dash-launch-hint {
+  margin-top: 8px; font-size: 10.5px; color: var(--tx3);
+  opacity: .55; transition: opacity var(--dur-fast) var(--ease-in-out);
+}
+.dash-card:hover .dash-launch-hint { opacity: 1; color: var(--ac); }
 .dash-card-body { margin-top: 10px; font-size: 12px; color: var(--tx2); min-height: 16px; }
 
 /* 状态灯（脉冲呼吸只给"运行中"） */

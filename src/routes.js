@@ -42,6 +42,7 @@ import { synthesize as synthesizeSpeech, resolveSpeechEndpoint, readCloneRef, CL
 import { resolveAdapter, ADAPTERS, FORMAT_IDS, capabilitiesText } from './speech/adapters/index.js';
 import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
+import { resolveLaunchCommand, openApp } from './channels/launch.js';
 import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
@@ -107,6 +108,24 @@ export function createRoutes(deps) {
         // 通道元数据快照（含能力与实时状态）。只读诊断面，不暴露通道内部引用。
         // ⚠️ 本框架 handler 必须自己调 json() 写响应，返回裸对象会永远挂起。
         return json(res, 200, { channels: channelManager.list() });
+      }
+    },
+    {
+      // 驾驶舱卡片点击 = 启动器：拉起通道对应的软件。
+      // ⚠️ 仅本机控制台可触发（外部消息进不来这里）；这是"主人点按钮"，不是工具调用。
+      method: 'POST', pattern: /^\/api\/channels\/([\w-]+)\/launch$/,
+      handler: async ({ res, json, match }) => {
+        const channelId = match[1];
+        if (!channelManager.has(channelId)) return json(res, 404, { error: `未知通道: ${channelId}` });
+        const resolved = resolveLaunchCommand(channelId, getConfig());
+        if (!resolved) return json(res, 400, { error: `通道 ${channelId} 未定义启动方式` });
+        try {
+          const result = openApp(resolved);
+          log(`[channels] 通道 ${channelId} 启动：${result.via}`);
+          return json(res, 200, { launched: true, via: result.via, pid: result.pid ?? null });
+        } catch (error) {
+          return json(res, 500, { error: `启动失败：${error?.message ?? error}` });
+        }
       }
     },
     {

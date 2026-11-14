@@ -505,7 +505,9 @@ export const DEFAULT_CONFIG = {
       //   napcat = NapCat 协议端（hook，实时完整事件流；小号已被风控，暂不推荐）
       backend: 'uia',
       uiaWsPort: 11229,         // 核心监听 ws://127.0.0.1:11229/ws，桥接连入（对齐桥接示例配置）
-      selfId: ''                // 小号 QQ 号（桥接 get_login_info 的兜底）
+      selfId: '',               // 小号 QQ 号（桥接 get_login_info 的兜底）
+      // 驾驶舱卡片点击 = 启动器：留空走自动探测（QQNT 标准安装位 → qq:// 协议兜底）
+      launchCommand: ''
     },
     browser: {
       // 浏览器需以远程调试模式启动后通道才能连上：
@@ -514,7 +516,8 @@ export const DEFAULT_CONFIG = {
       cdpUrl: 'http://127.0.0.1:9222',
       readLimit: 8000,          // readPage 正文截断（字符数，防 token 失控）
       navTimeoutMs: 30000,      // 页面导航超时
-      actionTimeoutMs: 10000    // 单次点击/填充超时
+      actionTimeoutMs: 10000,   // 单次点击/填充超时
+      launchCommand: ''         // 留空 = start msedge（可换成任意浏览器命令）
     },
     mail: {
       enabled: false,
@@ -524,7 +527,8 @@ export const DEFAULT_CONFIG = {
       // 入站白名单（正则字符串数组，匹配发件人地址）。空 = 邮件照收照入站管道
       // 但打 unverified 戳（防陌生人诱导机器人执行任务由 allowedFrom 门控）。
       allowedFrom: [],
-      maxBodyChars: 12000       // 入站正文截断
+      maxBodyChars: 12000,      // 入站正文截断
+      launchCommand: ''         // 留空 = start mail:（系统默认邮件处理）
     }
   }
 };
