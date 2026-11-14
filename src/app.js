@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { getConfig, updateConfig, ROOT, DATA_DIR } from './config.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from './onebot.js';
 import { ChannelManager, registerBuiltinChannels } from './channels/manager.js';
+import { registerBrowserTools } from './channels/browser/tools.js';
+import { registerMailTools } from './channels/mail/tools.js';
 import { isAtMe } from './prompt.js';
 import { ChatStore } from './store.js';
 import { MemoryStore } from './memory.js';
@@ -620,10 +622,23 @@ export function createApp({ log = console.log } = {}) {
   // （设计见 ZCode 工作区 DESIGN.md / AGENTS.md 通道框架方针）。
   const channelManager = new ChannelManager({ log });
   registerBuiltinChannels(channelManager, { config: cfg });
-  channelManager.onInbound((event) => handleOneBotEvent(event).catch((error) => log('[ingest] 处理事件出错:', error?.message ?? error)));
+  // 入站按通道分流：QQ 事件走既有 OneBot 管道；其他通道 v0.8 先记录（不进
+  // AI 管道——邮件/浏览器消息的会话语义接入属后续路线，见 DESIGN.md）。
+  // ⚠️ 不打印事件内容（QQ 消息/邮件正文是隐私）。
+  channelManager.onInbound((event, meta) => {
+    const channelId = meta?.channelId ?? event?.channelId ?? '?';
+    if (channelId === 'qq') {
+      handleOneBotEvent(event).catch((error) => log('[ingest] 处理事件出错:', error?.message ?? error));
+      return;
+    }
+    log(`[channels] 通道 ${channelId} 入站 1 条事件（尚未接入 AI 管道，已忽略）`);
+  });
   channelManager.onStatus((st) => { if (st.channelId === 'qq') emit('onebot-status', st.status); });
   const qqChannel = channelManager.get('qq');
   const onebot = qqChannel.client;
+  // 通道工具注册（闭包注入 getChannel：工具执行时才取通道，支持同进程重建）
+  registerBrowserTools({ getChannel: () => channelManager.get('browser') });
+  registerMailTools({ getChannel: () => channelManager.get('mail') });
   const stickers = new StickerManager(onebot);
   const sender =   new SendQueue({
     onebot, store,
@@ -1301,6 +1316,7 @@ export function createApp({ log = console.log } = {}) {
   // 路由 handler 通过闭包取用这些依赖，handleHttp 只负责匹配分发。
   const apiRoutes = createRoutes({
     store, memory, sessions, onebot, orchestrator,
+    channelManager,
     emit, log,
     localVersion,
     sanitizeConfig, keyEndpointAllowed, sanitizeProvider,

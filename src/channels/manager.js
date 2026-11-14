@@ -12,6 +12,8 @@
 //         第二个通道落地时统一切 manager.send）
 import { ChannelError, CHANNEL_ERROR_CODES, METHOD_CAPABILITY, validateChannel } from './types.js';
 import { QQChannel } from './qq/index.js';
+import { BrowserChannel } from './browser/index.js';
+import { MailChannel } from './mail/index.js';
 
 export class ChannelManager {
   #channels = new Map();       // id → channel
@@ -150,8 +152,10 @@ export class ChannelManager {
   }
 }
 
-/** 内置通道注册表：v0.8 只有 QQ；后续 browser/mail/office 在此追加。 */
+/** 内置通道注册表：新通道在此追加一行（配置切片自 config.channels.<id> 取）。 */
 export function registerBuiltinChannels(manager, { config } = {}) {
   manager.register(new QQChannel({ config: config?.snowluma ?? config }));
+  manager.register(new BrowserChannel({ config: config?.channels?.browser }));
+  manager.register(new MailChannel({ config: config?.channels?.mail }));
   return manager;
 }

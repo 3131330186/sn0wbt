@@ -52,6 +52,7 @@ import { detectDialect as detectThinkingDialect } from './thinking.js';
 export function createRoutes(deps) {
   const {
     store, memory, sessions, onebot, orchestrator,
+    channelManager,
     emit, log,
     // app.js 内部的过程/状态
     localVersion,
@@ -100,6 +101,13 @@ export function createRoutes(deps) {
 
   return [
     // ── 状态 / 数据目录 / 重置 ─────────────────────────────────────────
+    {
+      method: 'GET', pattern: '/api/channels',
+      handler: async () => {
+        // 通道元数据快照（含能力与实时状态）。只读诊断面，不暴露通道内部引用。
+        return { channels: channelManager.list() };
+      }
+    },
     {
       method: 'GET', pattern: '/api/status',
       handler: async ({ res, json }) => {
