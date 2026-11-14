@@ -830,5 +830,6 @@ function switchTab(name) {
   if (name === 'device') loadDevicePage();
   if (name === 'voice') loadVoicePage();
   if (name === 'webchat') loadWebChat();
+  if (name === 'channels') loadChannelsPage();
   if (name === 'settings') loadSettings();
 }

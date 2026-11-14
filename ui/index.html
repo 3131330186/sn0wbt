@@ -73,6 +73,7 @@
     <button class="tab" data-tab="device">外联</button>
     <button class="tab" data-tab="voice">语音</button>
     <button class="tab" data-tab="webchat">对话</button>
+    <button class="tab" data-tab="channels">通道</button>
     <button class="tab active" data-tab="sessions">会话</button>
     <button class="tab" data-tab="chats">存档</button>
     <button class="tab" data-tab="memory">记忆</button>
@@ -100,6 +101,11 @@
     <!-- 对话视图：网页对话（虚拟会话 private:web，走 agent 私聊管道） -->
     <section id="view-webchat" class="view">
       <div id="webchat-page" class="usage-pane"></div>
+    </section>
+
+    <!-- 通道视图：sn0wbot 通道框架状态（QQ/浏览器/邮件……皆通道） -->
+    <section id="view-channels" class="view">
+      <div id="channels-page" class="usage-pane"></div>
     </section>
 
     <!-- 会话视图 -->
@@ -186,6 +192,7 @@
   <script defer src="/app/13-device.js"></script>
   <script defer src="/app/14-voice.js"></script>
   <script defer src="/app/15-webchat.js"></script>
+  <script defer src="/app/16-channels.js"></script>
   <script defer src="/app/11-init.js"></script>
 
   <!-- 阿里云验证码 2.0（意见收集/金句上传共用）：容器常驻；AliyunCaptchaConfig 与
