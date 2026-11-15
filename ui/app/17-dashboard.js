@@ -165,7 +165,12 @@ async function openChannelConnectModal() {
         body: JSON.stringify({ enabled: true, config: values })
       });
       closeModelModal(overlay);
-      showAppAlert(`${chId === 'mail' ? '邮箱' : chId === 'browser' ? '浏览器' : chId} 链接成功${result.status === 'error' ? '，但通道启动异常，请到通道页查看' : ''} ✓`);
+      const label = chId === 'mail' ? '邮箱' : chId === 'browser' ? '浏览器' : chId === 'qq' ? 'QQ' : chId;
+      // QQ 的接入会联动拉起桥接进程；环境缺失时后端如实降级 —— 必须让用户看见，
+      // 否则"接入成功但机器人不回"又是一口深坑。
+      const bridgeWarn = (chId === 'qq' && result.bridge && result.bridge !== '已拉起')
+        ? `；但桥接未启动：${result.bridge}` : '';
+      showAppAlert(`${label} 链接成功${result.status === 'error' ? '，但通道启动异常，请到通道页查看' : ''}${bridgeWarn} ✓`);
       refreshDashboard({ quiet: true });
     } catch (error) {
       errNode.textContent = `建立链接失败：${error?.message ?? error}`;
@@ -219,14 +224,30 @@ function renderDashHello(st) {
   node.innerHTML = `${stateText}<span class="sep"></span>QQ：${esc(qqName)}`;
 }
 
+/** 引导卡：模型未配置时亮出来（机器人静默积压消息，用户视角=它装死）。 */
+function renderDashGuide(modelSet, unreadTotal) {
+  const node = document.getElementById('dash-guide');
+  if (!node) return;
+  if (modelSet) { node.hidden = true; node.innerHTML = ''; return; }
+  node.hidden = false;
+  node.innerHTML = `
+    <div class="dash-guide-card" id="dash-guide-card">
+      <b>⚙ 模型未配置</b>
+      <span>机器人收到消息不会回复（已积压 <b>${unreadTotal}</b> 条未读）。去
+      <a data-goto-settings>设置 → 模型 API</a> 填好模型后，积压会自动补处理。</span>
+    </div>`;
+}
+
 async function refreshDashboard({ quiet = false } = {}) {
   try {
-    const [chRes, stRes, seRes, inRes] = await Promise.all([
+    const [chRes, stRes, seRes, inRes, cfgRes, chatRes] = await Promise.all([
       api('/api/channels').catch(() => null),
       api('/api/status').catch(() => null),
       api('/api/sessions?limit=8').catch(() => null),
       // 实例快照有 15s 服务端缓存 + UIA 枚举成本，失败静默（落回通用卡）
-      api('/api/channels/qq/instances').catch(() => null)
+      api('/api/channels/qq/instances').catch(() => null),
+      api('/api/config').catch(() => null),
+      api('/api/chats').catch(() => null)
     ]);
     if (inRes) {
       dashQQInstances = Array.isArray(inRes.instances) ? inRes.instances : [];
@@ -239,6 +260,9 @@ async function refreshDashboard({ quiet = false } = {}) {
       renderDashUsage(stRes);
     }
     if (seRes) renderDashRecent(seRes.sessions ?? []);
+    // 引导卡：模型没配 + 有积压 = 最影响"它怎么不理我"体感的坑，亮在最显眼处
+    const unreadTotal = (chatRes?.chats ?? []).reduce((sum, c) => sum + (Number(c.unread) || 0), 0);
+    renderDashGuide(Boolean(cfgRes?.api?.model), unreadTotal);
   } catch (error) {
     if (!quiet) showAppAlert(`驾驶舱数据加载失败：${error?.message ?? error}`);
   }
@@ -249,12 +273,13 @@ function buildDashSkeleton() {
   dashSkeletonBuilt = true;
   const page = document.getElementById('dashboard-page');
   if (!page) return;
-  page.innerHTML = `
+    page.innerHTML = `
     <div class="dash-wrap">
       <div class="dash-hello">
         <h2>驾驶舱</h2>
         <span class="dash-state" id="dash-hello-state"><span class="dot"></span>加载中…</span>
       </div>
+      <div id="dash-guide" hidden></div>
       <div class="dash-grid" id="dash-channels"><div class="dash-empty">加载中…</div></div>
       <div class="dash-usage" id="dash-usage"></div>
       <div class="dash-section">
@@ -294,6 +319,10 @@ function buildDashSkeleton() {
     }
   });
   document.getElementById('dash-more-sessions')?.addEventListener('click', () => switchTab('sessions'));
+  // 引导卡点击 → 直达模型设置
+  document.getElementById('dash-guide')?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-goto-settings]') || e.target.closest('.dash-guide-card')) switchTab('settings');
+  });
 }
 
 function loadDashboard() {

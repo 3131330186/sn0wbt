@@ -169,6 +169,14 @@ await c.check('setByPath：嵌套已有对象不覆盖兄弟键', () => {
   assert.deepEqual(o, { imap: { user: 'u', host: 'h' } });
 });
 
+await c.check('原型污染防护：__proto__/constructor/prototype 路径一律拒绝', () => {
+  const o = {};
+  setByPath(o, '__proto__.polluted', 'x');
+  assert.equal({}.polluted, undefined, 'setByPath 不得写穿原型链');
+  setByPath(o, 'constructor.prototype.p2', 'y');
+  assert.equal({}.p2, undefined, 'constructor 路径同样拒绝');
+});
+
 // ── 4. 入站分发 ─────────────────────────────────────────────────────────
 await c.check('入站分发：channelId 自动打戳 + 多订阅者全收', async () => {
   const m = new ChannelManager();

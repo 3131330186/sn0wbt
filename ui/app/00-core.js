@@ -734,7 +734,9 @@ function assessReadiness(cfg, status) {
   const allowOk = (cfg.allow?.groups?.length || cfg.allow?.private?.length || cfg.allowAllWhenEmpty);
   checks.push({ ok: !!allowOk, label: allowOk ? `白名单：${(cfg.allow.groups || []).length} 个群 / ${(cfg.allow.private || []).length} 个好友` : '还没有配置白名单（必填）', fix: allowOk ? null : 'settings-allow' });
   const obOk = status?.onebot?.connected;
-    checks.push({ ok: !!obOk, label: obOk ? `OneBot 已连接${status.onebot.self ? `（${status.onebot.self.nickname}）` : ''}` : (status.onebot.diagnosis || 'OneBot（SnowLuma）未连接 —— 请到 SnowLuma 页签启动'), fix: obOk ? null : 'snowluma-tab' });
+    // 诊断文案由后端按通道语义给出（未接入/UIA 桥接/协议端）；不再写死
+    // SnowLuma 指引。诊断存在时文字本身就说明了去哪处理，不再附加跳转。
+    checks.push({ ok: !!obOk, label: obOk ? `QQ 已连接${status.onebot.self ? `（${status.onebot.self.nickname}）` : ''}` : (status.onebot.diagnosis || 'QQ 未连接 —— 查看通道页状态'), fix: obOk ? null : null });
   return { ready: urlOk && modelOk && allowOk && obOk, checks };
 }
 
@@ -749,7 +751,8 @@ function renderBanner() {
     html = '⏸ 机器人已暂停，不会处理任何消息。';
   } else if (s && !s.onebot.connected && !s.onebot.everConnected) {
     show = true;
-    html = '🔌 OneBot（SnowLuma）还没连上：请确认 SnowLuma 已启动，且设置里的 WS/HTTP 地址正确。';
+    // 诊断由后端按通道语义给出（未接入/UIA 桥接/协议端），不再写死 SnowLuma 指引
+    html = '🔌 ' + (s.onebot.diagnosis || 'QQ 还没连上：请到「通道」页查看状态。');
   }
   if (show) {
     // 出现交给 .banner 自带的 pageIn；uiShow 只负责作废进行中的淡出并落实状态

@@ -47,6 +47,8 @@ export const CHANNEL_CATALOG = [
 /** dot-path 写入嵌套对象（'imap.host' → { imap: { host: v } }），不打平已有键。 */
 export function setByPath(obj, dottedPath, value) {
   const keys = String(dottedPath).split('.');
+  // 原型污染防护：这些键名会让 cur[keys[i]] 沿原型链爬出去写脏 Object.prototype
+  if (keys.some((k) => k === '__proto__' || k === 'constructor' || k === 'prototype')) return obj;
   let cur = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     if (typeof cur[keys[i]] !== 'object' || cur[keys[i]] === null) cur[keys[i]] = {};

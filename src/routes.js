@@ -47,6 +47,7 @@ import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
 import { resolveLaunchCommand, openApp, smartLaunch } from './channels/launch.js';
 import { listQQInstances, focusQQInstance } from './channels/qq/instances.js';
+import { spawnBridgeProcess } from './channels/qq/bridge-process.js';
 import { CHANNEL_CATALOG, formValuesToChannelPatch } from './channels/catalog.js';
 import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
@@ -78,26 +79,6 @@ export function createRoutes(deps) {
 
   // QQ 实例快照缓存（15s TTL）：探针要跑 Python UIA 枚举，不能每轮询都跑
   const instancesCache = { at: 0, data: [] };
-
-  /**
-   * 拉起/停止 UIA 桥接进程（QQ 通道 enable 的联动动作）。fire-and-forget：
-   * ps1 自己负责进程管理（互斥体/看门狗 hold），这里不等它。
-   * bridges/ 缺失（未装桥接环境）时如实降级，不报错。
-   */
-  function spawnBridgeProcess(script) {
-    const bridgeDir = path.resolve(__dirname, '..', 'bridges', 'qq-onebotv11-uia-bridge');
-    const ps1 = path.join(bridgeDir, 'scripts', script);
-    if (!fs.existsSync(ps1)) return '桥接环境未安装（bridges/ 缺失），跳过';
-    try {
-      const child = spawn('powershell.exe',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
-        { cwd: bridgeDir, windowsHide: true, stdio: 'ignore' });
-      child.unref?.();
-      return script === 'start-bridge.ps1' ? '已拉起' : '已停止';
-    } catch (error) {
-      return `失败：${error?.message ?? error}`;
-    }
-  }
 
   // 小工具：读请求体（容错：没 body 当空对象）。
   // 但 readBody 明确标记的可暴露错误（400 非法 JSON / 413 过大）必须透传，
@@ -242,22 +223,31 @@ export function createRoutes(deps) {
         const usage = sessions.todayUsage(dayKey);
         const cfgNow = getConfig();
         const cost = estimateCost(usage, { model: cfgNow.api?.model });
-        // ┚ SnowLuma 运行判定用 WebUI 端口（进程即起即听）。
-        // WS 3001 要等账号登录后才监听，用它判"运行中"会把"起了但未登录"
-        // 误报成"未运行"（进而触发二次拉起 → 双实例管道冲突）。
+        // SnowLuma 页签状态字段仍需两端口探测（串行最坏 1.6s，既有行为）：
         const webuiPort = deps.snowlumaWebuiPort();
-        // 两个端口探测并行：串行时最坏 1.6s（各 800ms 超时），/api/status 每次都卡这么久
         const [slRunning, obPortOpen] = await Promise.all([
           deps.isPortOpen('127.0.0.1', webuiPort),
           deps.isPortOpen('127.0.0.1', snowlumaWsPort())
         ]);
-        // 诊断：把"连不上"拆成三种用户能看懂的原因（给 UI 就绪度体检用）。
+        // 诊断：把"连不上"拆成用户能看懂的原因（给 UI 就绪度体检用）。
+        // 按通道语义说话：未接入/UIA/协议端三种状态各有各的指引，
+        // 不再拿 NapCat/SnowLuma 的旧文案去解释未接入态（2026-11-15 用户指认误导）。
         let onebotDiagnosis = '';
         if (!onebot.connected) {
-          if (!slRunning) onebotDiagnosis = 'QQ 协议端（NapCat）未运行：请先启动 NapCat 并登录小号';
-          else if (!obPortOpen) onebotDiagnosis = 'NapCat 已运行但无账号登录：请完成扫码/快速登录（登录后数秒内会自动连上）';
-          else if (String(onebot.lastConnectError || '').includes('401')) onebotDiagnosis = '访问令牌不匹配：正在自动轮换重试，若持续出现请在设置里核对 OneBot 令牌';
-          else onebotDiagnosis = onebot.lastConnectError ? `连接失败：${String(onebot.lastConnectError).slice(0, 120)}` : '连接中…';
+          const qqSlice = getConfig()?.channels?.qq ?? {};
+          if (qqSlice.enabled !== true) {
+            onebotDiagnosis = 'QQ 未接入：在驾驶舱「添加链接」接入后可用';
+          } else if (qqSlice.backend === 'napcat') {
+            // ┚ SnowLuma 运行判定用 WebUI 端口（进程即起即听）。WS 3001 要等
+            // 账号登录后才监听，用它判"运行中"会把"起了但未登录"误报成"未运行"
+            //（进而触发二次拉起 → 双实例管道冲突）——上面统一探测的端口在此使用。
+            if (!slRunning) onebotDiagnosis = 'QQ 协议端（NapCat）未运行：请先启动 NapCat 并登录小号';
+            else if (!obPortOpen) onebotDiagnosis = 'NapCat 已运行但无账号登录：请完成扫码/快速登录（登录后数秒内会自动连上）';
+            else if (String(onebot.lastConnectError || '').includes('401')) onebotDiagnosis = '访问令牌不匹配：正在自动轮换重试，若持续出现请在设置里核对 OneBot 令牌';
+            else onebotDiagnosis = onebot.lastConnectError ? `连接失败：${String(onebot.lastConnectError).slice(0, 120)}` : '连接中…';
+          } else {
+            onebotDiagnosis = '桥接未连入：确认桌面 QQ 已登录（接入时会自动拉起桥接进程）';
+          }
         }
         return json(res, 200, {
           onebot: {

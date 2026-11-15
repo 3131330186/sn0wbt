@@ -1,0 +1,1705 @@
+# -*- coding: utf-8 -*-
+"""
+UIA -> OneBot v11 reverse-WebSocket bridge for AstrBot.
+
+Instead of hooking / injecting into the QQ process (NapCat, Lagrange, SnowLuma),
+this drives the real QQ desktop client through Windows UI Automation: it reads
+the message list and types replies, exactly like a person would. AstrBot sees a
+normal OneBot v11 client on its aiocqhttp reverse-WS endpoint, so every plugin,
+persona and memory file keeps working unchanged.
+
+Topology:
+    QQ desktop client  <--UIA-->  this bridge  <--OneBot v11 WS-->  AstrBot :11229
+
+Multi-session design (this is the part that matters):
+  * Every outgoing message is addressed by one of the `chats` entries in
+    bridge-config.json. Before typing, the bridge switches QQ to that
+    conversation and *verifies the header* -- twice, once after the switch and
+    once immediately before typing. If the header does not confirm, the send
+    fails loudly instead of dropping the text into whatever chat was open.
+  * Conversations are reached by clicking the row inside QQ's session list, and
+    the list is scrolled with the wheel when the row is off screen. The chat
+    header is read back afterwards, so a mis-click fails the send instead of
+    reaching the wrong person.
+  * read_mode=watch reads the session list (preview + unread badge) to find out
+    which conversations have new traffic, switches into only those, and restores
+    the conversation the user was looking at afterwards.
+  * read_mode=active never switches while polling; read_mode=cycle walks every
+    configured chat each poll.
+  * Images AstrBot sends are pasted from the Windows clipboard into QQ's editor
+    (base64:// segments are written to logs\\uia-outgoing first), then confirmed
+    the same way text sends are.
+
+Usage:
+    python onebot_uia_bridge.py                       # bridge-config.json
+    python onebot_uia_bridge.py --config X.json
+    python onebot_uia_bridge.py --dry-run             # read only, never send
+    python onebot_uia_bridge.py --selfcheck           # report config vs QQ, exit
+"""
+
+import argparse
+import asyncio
+import base64
+import collections
+import hashlib
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import websockets
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import qq_uia  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG = os.path.join(HERE, "bridge-config.json")
+
+AT_MARK = "\u6d77\u65f6"  # default self nickname used for @ detection
+
+# --- mute gate ---------------------------------------------------------------
+# Legacy fallback only. AstrBot's astrbot_plugin_chat_silence now owns mute
+# decisions with LLM classification and per-chat state. Keep mute_enabled=false
+# in normal operation so the bridge never becomes a second, global gate.
+# The keyword list lives in bridge-config.json as well; this is the fallback.
+DEFAULT_MUTE_SECONDS = 1800
+STATE_VERSION = 4
+DEFAULT_MUTE_KEYWORDS = [
+    "\u95ed\u5634", "\u9589\u5634", "\u522b\u8bf4\u4e86", "\u5225\u8aaa\u4e86", "\u522b\u8bf4\u8bdd", "\u522b\u8bf4\u8bdd\u4e86",
+    "\u5c11\u8bf4\u8bdd", "\u5c11\u8bf4\u70b9", "\u5c11\u8bf4\u4e24\u53e5", "\u8bdd\u592a\u591a", "\u8a71\u592a\u591a", "\u8bdd\u771f\u591a",
+    "\u8bdd\u597d\u591a", "\u8bdd\u6709\u70b9\u591a", "\u5e9f\u8bdd\u592a\u591a", "\u5c11\u5e9f\u8bdd", "\u522b\u5435", "\u5225\u5435",
+    "\u5b89\u9759\u70b9", "\u5b89\u9759\u4e00\u70b9", "\u9759\u4e00\u9759", "shut up", "stfu", "be quiet",
+]
+# --- end mute gate -----------------------------------------------------------
+
+
+def log(*a):
+    print(time.strftime("[%H:%M:%S]"), *a, flush=True)
+
+
+def now_ts():
+    return int(time.time())
+
+
+def user_idle_seconds():
+    """Seconds since the last keyboard or mouse input anywhere on the box."""
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        now = ctypes.windll.kernel32.GetTickCount()
+        return max(0.0, ((now - info.dwTime) & 0xFFFFFFFF) / 1000.0)
+    except Exception:
+        return 0.0
+
+
+def chat_key(chat):
+    return "%s:%s" % (chat["kind"], chat["id"])
+
+
+def stable_uid(name):
+    """Same nickname -> same synthetic uid across restarts."""
+    return str(int(hashlib.md5(name.encode("utf-8")).hexdigest()[:8], 16) % 1000000000)
+
+
+def message_to_text(msg):
+    """Extract plain text from an OneBot message (string or segment array)."""
+    if isinstance(msg, str):
+        return msg
+    parts = []
+    for seg in msg or []:
+        t = seg.get("type")
+        d = seg.get("data") or {}
+        if t == "text":
+            parts.append(d.get("text", ""))
+        elif t == "at":
+            parts.append("%s " % (d.get("name") or d.get("qq")))
+        elif t in ("image", "face", "mface", "record", "video", "file"):
+            continue  # not reproducible through the UI; never type a placeholder
+    return "".join(parts).strip()
+
+
+def parse_parts(msg):
+    """OneBot message -> ordered [('text', str) | ('image', data-dict)].
+
+    Images are kept in order so a mixed message still reads the way AstrBot
+    built it; unsupported segment types are skipped rather than turned into
+    placeholder text, which would be typed into the chat.
+    """
+    if isinstance(msg, str):
+        return [("text", msg)] if msg else []
+    out = []
+    for seg in msg or []:
+        t = seg.get("type")
+        d = seg.get("data") or {}
+        if t == "text":
+            if d.get("text"):
+                out.append(("text", d["text"]))
+        elif t == "image":
+            out.append(("image", d))
+        elif t == "at":
+            out.append(("text", "%s " % (d.get("name") or d.get("qq"))))
+        elif t in ("face", "mface", "record", "video", "file"):
+            continue
+    return out
+
+
+def describe_parts(parts):
+    bits = []
+    for kind, payload in parts:
+        bits.append(payload[:40] if kind == "text" else "[image %s]" % os.path.basename(payload))
+    return " + ".join(bits)
+
+def sig_of(m):
+    """Identity of a message for diffing.
+
+    Prefer the Chromium UIA RuntimeId. Text alone collapses repeated messages
+    such as "OK" or "[image]" into one signature, which can both suppress a
+    genuinely new message and make a redraw look new.
+    """
+    native_id = m.get("native_id")
+    if native_id is not None:
+        if isinstance(native_id, (list, tuple)):
+            native_id = ".".join(str(part) for part in native_id)
+        return (bool(m.get("is_self")), "uia:" + str(native_id))
+    return (bool(m.get("is_self")), "text:" + str(m.get("text", "")))
+
+
+def content_sig_of(m, chat=None):
+    """Identity that survives Chromium destroying and rebuilding its UIA nodes."""
+    image_shapes = []
+    for shape in (m.get("image_shapes") or []):
+        try:
+            image_shapes.append("%dx%d" % (int(shape[0]), int(shape[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if image_shapes:
+        image_sig = "shapes:" + ",".join(image_shapes)
+    else:
+        image_count = len(m.get("image_paths") or m.get("image_hashes") or [])
+        image_sig = ("count:%d" % image_count) if image_count else ""
+    sender = str(m.get("sender") or "")
+    # A private chat has exactly one peer, so the nickname is not part of a
+    # message's identity. Chromium sometimes exposes it and sometimes leaves it
+    # empty; treating those renderings as different signatures replayed old
+    # messages after a short-snapshot repaint.
+    if chat and chat.get("kind") == "private":
+        sender = ""
+    return (
+        bool(m.get("is_self")),
+        "content:%s\0%s\0images:%s"
+        % (sender, m.get("text", ""), image_sig),
+    )
+
+
+def diff_since(prev_sigs, cur, sig_fn=sig_of):
+    """(fresh messages, trusted).
+
+    QQ keeps only the tail of a conversation on screen, so the snapshot slides
+    between polls and the head of the new list is usually *not* a continuation
+    of the old one. A new snapshot can also grow backwards and contain older
+    rows before the previous tail. Find the longest suffix of the old snapshot
+    anywhere in the new one; everything after that overlap is genuinely new.
+
+    When it does not line up the snapshot may even be half rendered, so only
+    signatures that were absent from the previous snapshot are offered and the
+    caller filters those against everything already reported. Without that, a
+    partial re-render could hand AstrBot the same message twice and it would
+    answer twice.
+    """
+    cur_sigs = [sig_fn(m) for m in cur]
+    if not prev_sigs:
+        return list(cur), True
+    max_overlap = min(len(prev_sigs), len(cur_sigs))
+    min_overlap = min(4, max_overlap)
+    prev_list = list(prev_sigs)
+    for k in range(max_overlap, min_overlap - 1, -1):
+        needle = prev_list[-k:]
+        # Messages append to the tail. If identical content occurs multiple
+        # times, align the old tail to its earliest occurrence so a newly sent
+        # duplicate remains after the overlap instead of being swallowed.
+        for start in range(0, len(cur_sigs) - k + 1):
+            if cur_sigs[start:start + k] == needle:
+                return cur[start + k:], True
+    budget = collections.Counter(prev_sigs)
+    fresh = []
+    for m in cur:
+        s = sig_fn(m)
+        if budget[s] > 0:
+            budget[s] -= 1
+        else:
+            fresh.append(m)
+    return fresh, False
+
+
+def tail_overlap(left_sigs, right_sigs):
+    """Length of the longest prefix of right that is the tail of left."""
+    left = list(left_sigs)
+    right = list(right_sigs)
+    for k in range(min(len(left), len(right)), 0, -1):
+        if right[:k] == left[-k:]:
+            return k
+    return 0
+
+
+def short_snapshot_stable(first, second):
+    """True when two short reads describe substantially the same tail."""
+    if not first or not second:
+        return False
+    first_sigs = [content_sig_of(m) for m in first]
+    second_sigs = [content_sig_of(m) for m in second]
+    required = min(4, len(first_sigs), len(second_sigs))
+    return required > 0 and tail_overlap(first_sigs, second_sigs) >= required
+
+
+class UiaBackend:
+    """Every QQ client touch. Only ever called from the bridge worker thread."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.qq = None
+        self.lock = threading.RLock()
+        self.last_qq_launch_ts = 0.0
+        image_dir = str(cfg.get("incoming_image_dir") or "").strip()
+        if not image_dir:
+            image_dir = os.path.join(
+                os.path.dirname(HERE), "logs", "uia-incoming"
+            )
+        elif not os.path.isabs(image_dir):
+            image_dir = os.path.join(os.path.dirname(HERE), image_dir)
+        self.incoming_image_dir = image_dir
+        self.prune_incoming_images()
+
+    def prune_incoming_images(self, max_age_seconds=86400):
+        """Drop captured images after AstrBot has had a full day to consume them."""
+        if not os.path.isdir(self.incoming_image_dir):
+            return
+        cutoff = time.time() - max(3600, int(max_age_seconds))
+        removed = 0
+        try:
+            for name in os.listdir(self.incoming_image_dir):
+                if not name.startswith(("uia-", ".capture-")):
+                    continue
+                path = os.path.join(self.incoming_image_dir, name)
+                try:
+                    if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                        removed += 1
+                except OSError:
+                    continue
+        except OSError:
+            return
+        if removed:
+            log("pruned %d old incoming image(s)" % removed)
+
+    # ---- attach ----
+
+    def expect_names(self):
+        return [c["name"] for c in (self.cfg.get("chats") or []) if c.get("name")]
+
+    def _connect_once(self):
+        account = str(self.cfg.get("window_account") or "").strip()
+        self.qq = qq_uia.QQWindow().connect(expect=self.expect_names(), account=account or None)
+        log("QQ attached: account=%r window=%s renderer=%s" % (
+            account or self.qq.account_nickname(),
+            hex(self.qq.hwnd),
+            hex(self.qq.renderer_hwnd) if self.qq.renderer_hwnd else None))
+
+    def connect(self):
+        """Attach to the QQ window that actually holds the watched chats.
+
+        Several QQ accounts can be signed in at once and then more than one
+        window is titled "QQ"; attaching to the wrong one makes every switch
+        fail, so a window can be pinned by the account nickname (set from the
+        console UI) and otherwise the candidates are scored by their session
+        lists.
+        """
+        try:
+            self._connect_once()
+            return
+        except RuntimeError as exc:
+            if "QQ window not found" not in str(exc):
+                raise
+
+        qq_path = str(self.cfg.get("qq_path") or "")
+        reopen_idle = max(
+            30.0,
+            float(self.cfg.get("qq_reopen_idle_seconds", 120) or 120),
+        )
+        now = time.time()
+        if (qq_path and os.path.isfile(qq_path)
+                and user_idle_seconds() >= reopen_idle
+                and now - self.last_qq_launch_ts >= 30):
+            log("QQ window missing and the machine is idle; reopening the desktop client")
+            subprocess.Popen([qq_path], cwd=os.path.dirname(qq_path))
+            self.last_qq_launch_ts = now
+            for _ in range(12):
+                time.sleep(1)
+                try:
+                    self._connect_once()
+                    return
+                except Exception:
+                    pass
+        raise RuntimeError("QQ window not found")
+
+    def reselect(self, reason):
+        """Re-pick the QQ window after a failure that smells like a wrong one."""
+        try:
+            self.qq = None
+            # 带上期望会话名打分选窗：裸 connect 会 find(None) 盲选第一个窗口，
+            # 独立聊天窗在位时挂错窗 → 切换抖动 + 模拟点击拽鼠标（事故 2026-11-15）。
+            self.connect(expect=[c.get("name") for c in self.chats])
+            log("re-attached to QQ after %s (now on %r)" % (reason, self.qq.current_chat()))
+            return True
+        except Exception as e:
+            log("re-attach after %s failed: %s" % (reason, e))
+            return False
+
+    def _ensure_root(self):
+        if self.qq is None or not self.qq.alive():
+            self.connect()
+            return
+        try:
+            self.qq._fresh_root()
+        except Exception:
+            self.connect()
+
+    # ---- reads ----
+
+    def current_chat(self):
+        with self.lock:
+            self._ensure_root()
+            return self.qq.current_chat()
+
+    def session_items(self):
+        with self.lock:
+            self._ensure_root()
+            return self.qq.session_items()
+
+    # ---- switching ----
+
+    def switch(self, chat):
+        """Make QQ show `chat`. True only when the header confirms it."""
+        with self.lock:
+            self._ensure_root()
+            name = chat["name"]
+            if self.qq.current_chat() == name:
+                return True
+            settle = float(self.cfg.get("switch_settle", 0.9))
+
+            def swing():
+                return self.qq.open_chat(name, verify=chat.get("verify") or name)
+
+            ok = swing()
+            if not ok:
+                log("switch retry for %r (QQ is on %r)" % (name, self.qq.current_chat()))
+                # A window we cannot reach is usually the wrong QQ account.
+                self.reselect("a failed switch")
+                time.sleep(settle)
+                ok = swing()
+            time.sleep(settle)
+            got = self.qq.current_chat()
+            if got != name:
+                log("SWITCH FAILED: wanted %r, QQ shows %r" % (name, got))
+                return False
+            return True
+
+    def open_chat_by_name(self, name):
+        """Used to put back the conversation the user was looking at."""
+        return self.switch({"name": name})
+
+    # ---- read + send ----
+
+    def read_chat(self, chat):
+        """Messages of `chat`, or None when it could not be read."""
+        with self.lock:
+            self._ensure_root()
+            target = chat["name"]
+            if self.qq.current_chat() != target:
+                if self.cfg.get("read_mode", "watch") == "active":
+                    return None       # never move the mouse while polling
+                if not self.switch(chat):
+                    return None
+            msgs = self.qq.read_messages(
+                image_dir=self.incoming_image_dir,
+                expected_chat=target,
+            )
+            got = self.qq.current_chat()
+            if got != target:
+                log("READ DISCARD: wanted %r, QQ ended on %r; snapshot was not sent"
+                    % (target, got))
+                return None
+            return msgs
+
+    def send_parts(self, chat, parts):
+        """Send text/image parts in order into `chat` and nowhere else.
+
+        One switch serves the whole message, but the header is re-checked
+        before every part so a mid-sequence jump cannot misdeliver anything.
+        """
+        with self.lock:
+            self._ensure_root()
+            if not self.switch(chat):
+                raise RuntimeError("could not switch QQ to %r" % chat["name"])
+            mode = self.cfg.get("send_mode", "enter")
+            for kind, payload in parts:
+                if self.qq.current_chat() != chat["name"]:
+                    raise RuntimeError("conversation changed mid-send")
+                if kind == "text":
+                    self.qq.send_text(
+                        payload, mode, expected_chat=chat["name"]
+                    )
+                else:
+                    self.qq.send_image(
+                        payload, mode, expected_chat=chat["name"]
+                    )
+            if self.qq.current_chat() != chat["name"]:
+                raise RuntimeError("conversation changed while sending")
+    def send_text(self, chat, text):
+        """Send into `chat` and nowhere else.
+
+        The switch is verified twice so a lost race can never drop the text
+        into whichever conversation happened to be open.
+        """
+        with self.lock:
+            self._ensure_root()
+            if not self.switch(chat):
+                raise RuntimeError("could not switch QQ to %r" % chat["name"])
+            if self.qq.current_chat() != chat["name"]:
+                raise RuntimeError("conversation changed right before sending")
+            self.qq.send_text(
+                text,
+                self.cfg.get("send_mode", "enter"),
+                expected_chat=chat["name"],
+            )
+            if self.qq.current_chat() != chat["name"]:
+                raise RuntimeError("conversation changed while sending")
+
+
+class Bridge:
+    def __init__(self, cfg, dry_run=False):
+        self.cfg = cfg
+        self.dry_run = dry_run or bool(cfg.get("dry_run"))
+        self.self_id = str(cfg.get("self_id", ""))
+        self.nick = cfg.get("self_nickname", "") or AT_MARK
+        self.emit_self = bool(cfg.get("emit_self", False))
+        self.chats = list(cfg.get("chats") or [])
+        self.by_key = {chat_key(c): c for c in self.chats}
+
+        self.global_members = {str(k): v for k, v in (cfg.get("members") or {}).items()}
+        self.nick_to_uid = {}
+        self.uid_to_nick = dict(self.global_members)
+        for c in self.chats:
+            m = dict(self.global_members)
+            m.update({str(k): v for k, v in (c.get("members") or {}).items()})
+            self.nick_to_uid[chat_key(c)] = {name: qq for qq, name in m.items()}
+            self.uid_to_nick.update(m)
+        self.global_nick_to_uid = {}
+        for c in self.chats:
+            self.global_nick_to_uid.update(self.nick_to_uid[chat_key(c)])
+
+        self.loop = None
+        self.ws = None
+        self.msg_seq = 0
+        self.out_seq = 0
+        self.poll_count = 0   # polls since start, drives the sweep
+        self.sweep_every = int(cfg.get("sweep_every", 10) or 0)
+        self.sweep_idle = float(cfg.get("sweep_idle_seconds", 60) or 0)
+        self.last_read_ts = {}
+        self.read_retry_after = {}  # chat key -> wall-clock retry time
+        self.markers = {}     # chat key -> (preview, time, unread>0)
+        self.history = {}     # chat key -> [signature, ...]
+        self.content_history = {}  # chat key -> [repaint-stable signature, ...]
+        self.reported = {}    # chat key -> Counter of signatures already pushed
+        self.reported_order = {}   # chat key -> FIFO used to cap that Counter
+        self.reported_content = {}  # chat key -> Counter of repaint-stable signatures
+        self.reported_content_order = {}  # FIFO used to cap that Counter
+        self.recent_text = {}      # chat key -> deque of (text, when) pushed
+        self.deferred = {}    # chat key -> chat held back during a send burst
+        # 桌面互斥锁（人优先）：用户最近有键鼠输入时，不切窗、不抢焦点、不发消息。
+        # 没有它，每条回复 / 每轮巡检都会把 QQ 拉到前台打断工作（2026-11-15 事故）。
+        self.active_gate = max(0.0, float(cfg.get("active_gate_seconds", 45) or 0))
+        self._gate_logged = False
+        self.forced_reads = set()  # chats opened by the periodic safety sweep
+        self.last_send_ts = 0.0
+        self.read_once = set()     # chat keys already read once in this process
+        state_path = str(cfg.get("state_path") or "")
+        if not state_path:
+            state_path = os.path.join(os.path.dirname(HERE), "logs", "bridge-seen.json")
+        elif not os.path.isabs(state_path):
+            state_path = os.path.join(os.path.dirname(HERE), state_path)
+        self.state_path = state_path
+        self.backend = UiaBackend(cfg)
+        self.load_state()
+
+        # ---------- mute gate state ----------
+        self.mute_enabled = bool(cfg.get("mute_enabled", False))
+        try:
+            self.mute_seconds = int(cfg.get("mute_seconds", DEFAULT_MUTE_SECONDS) or DEFAULT_MUTE_SECONDS)
+        except (TypeError, ValueError):
+            self.mute_seconds = DEFAULT_MUTE_SECONDS
+        if self.mute_seconds <= 0:
+            self.mute_seconds = DEFAULT_MUTE_SECONDS
+        kws = cfg.get("mute_keywords")
+        if not isinstance(kws, (list, tuple)):
+            kws = DEFAULT_MUTE_KEYWORDS
+        self.mute_keywords = [str(k).strip() for k in kws if str(k).strip()]
+        self.mute_require_nick = bool(cfg.get("mute_require_nickname_in_group", True))
+        self.mute_swallow_inbound = bool(cfg.get("mute_swallow_inbound", False))
+        names = set()
+        for extra in (cfg.get("self_nickname"), cfg.get("window_account")):
+            if extra:
+                names.add(str(extra).strip())
+        names.add(str(self.nick).strip())
+        extra_names = cfg.get("mute_trigger_names")
+        if isinstance(extra_names, (list, tuple)):
+            names.update(str(x).strip() for x in extra_names)
+        self.mute_names = {n for n in names if n}
+        self.muted_until = {}
+        self.mute_log_ts = {}
+
+        self.jobs = queue.Queue()
+        self.worker = threading.Thread(target=self._worker, name="uia", daemon=True)
+        self._check_config()
+
+    # ---------- config sanity ----------
+
+    def _check_config(self):
+        seen = {}
+        for c in self.chats:
+            key = chat_key(c)
+            if key in seen:
+                log("WARN: duplicate chat entry %s" % key)
+            seen[key] = c
+        by_name = {}
+        for c in self.chats:
+            by_name.setdefault(c["name"], []).append(c)
+        for name, group in by_name.items():
+            if len(group) > 1:
+                keys = ", ".join(chat_key(c) for c in group)
+                log("WARN: %r is configured more than once (%s); switching by the "
+                    "session list cannot tell two rows with the same name apart"
+                    % (name, keys))
+        missing = [c["name"] for c in self.chats if not c.get("name")]
+        if missing:
+            log("WARN: %d chat entries have no name" % len(missing))
+
+    def is_ambiguous(self, chat):
+        """Two config entries with the same display name would share one row."""
+        return len([c for c in self.chats if c["name"] == chat["name"]]) > 1
+
+    # ---------- ids ----------
+
+    def next_msg_id(self):
+        self.msg_seq += 1
+        return 10_000_000 + self.msg_seq
+
+    def uid_for(self, chat, nickname):
+        table = self.nick_to_uid.get(chat_key(chat), {})
+        if nickname in table:
+            return table[nickname]
+        if nickname in self.global_nick_to_uid:
+            return self.global_nick_to_uid[nickname]
+        return stable_uid(nickname)
+
+    def name_for(self, uid):
+        return self.uid_to_nick.get(str(uid), str(uid))
+
+    def members_of(self, chat):
+        m = dict(self.global_members)
+        m.update({str(k): v for k, v in (chat.get("members") or {}).items()})
+        return m
+
+    # ---------- outgoing images ----------
+
+    @staticmethod
+    def _sniff_ext(blob):
+        if blob[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if blob[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if blob[:6] in (b"GIF87a", b"GIF89a"):
+            return ".gif"
+        if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+            return ".webp"
+        if blob[:2] == b"BM":
+            return ".bmp"
+        return ".png"
+
+    def _save_outgoing(self, blob, ext):
+        out_dir = self.cfg.get("outbox_dir") or os.path.join(
+            os.path.dirname(HERE), "logs", "uia-outgoing")
+        os.makedirs(out_dir, exist_ok=True)
+        self.out_seq += 1
+        path = os.path.join(out_dir, "img_%d_%d%s" % (now_ts(), self.out_seq, ext))
+        with open(path, "wb") as f:
+            f.write(blob)
+        return path
+
+    def prune_outbox(self):
+        """Drop outgoing images older than a day; AstrBot sends one per reply."""
+        out_dir = self.cfg.get("outbox_dir") or os.path.join(
+            os.path.dirname(HERE), "logs", "uia-outgoing")
+        if not os.path.isdir(out_dir):
+            return
+        cutoff = time.time() - 24 * 3600
+        for name in os.listdir(out_dir):
+            path = os.path.join(out_dir, name)
+            try:
+                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+    def resolve_image(self, data):
+        """OneBot image segment -> local file path, or None.
+
+        AstrBot's aiocqhttp adapter always sends images as
+        {"type": "image", "data": {"file": "base64://..."}}, but file:// URIs,
+        plain paths and http(s) URLs are accepted too.
+        """
+        raw = str((data or {}).get("file") or (data or {}).get("url") or "").strip()
+        if not raw:
+            return None
+        try:
+            if raw.startswith("base64://"):
+                blob = base64.b64decode(raw[len("base64://"):])
+                return self._save_outgoing(blob, self._sniff_ext(blob))
+            if raw.startswith("data:image/"):
+                head, _, body = raw.partition(",")
+                head = head.lower()
+                ext = ".jpg" if ("jpeg" in head or "jpg" in head) else (
+                    ".gif" if "gif" in head else (".webp" if "webp" in head else ".png"))
+                return self._save_outgoing(base64.b64decode(body), ext)
+            if raw.startswith("file://"):
+                path = raw[7:]
+                if re.match(r"^/[A-Za-z]:", path):
+                    path = path[1:]
+                path = urllib.parse.unquote(path)
+                return path if os.path.isfile(path) else None
+            if re.match(r"^https?://", raw):
+                out_dir = self.cfg.get("outbox_dir") or os.path.join(
+                    os.path.dirname(HERE), "logs", "uia-outgoing")
+                os.makedirs(out_dir, exist_ok=True)
+                with urllib.request.urlopen(raw, timeout=20) as resp:
+                    blob = resp.read()
+                return self._save_outgoing(blob, self._sniff_ext(blob))
+            if os.path.isfile(raw):
+                return raw
+            # Bare file name: look it up in the configured attachment folders.
+            for root in (self.cfg.get("image_search_dirs") or []):
+                cand = os.path.join(root, raw)
+                if os.path.isfile(cand):
+                    return cand
+        except Exception as e:
+            log("WARN: could not resolve image %r: %s" % (raw[:60], e))
+        return None
+    # ---------- event builders ----------
+
+    def build_event(self, chat, m):
+        gid = chat["id"] if chat["kind"] == "group" else None
+        if m["is_self"]:
+            uid = self.self_id
+            nickname = self.nick
+        elif chat["kind"] == "private":
+            uid = chat["id"]
+            nickname = chat["name"]
+        else:
+            nickname = m["sender"] or "unknown"
+            uid = self.uid_for(chat, nickname)
+        text = m["text"]
+        image_paths = [
+            path for path in (m.get("image_paths") or [])
+            if path and os.path.isfile(path)
+        ]
+        segments = []
+        if chat["kind"] == "group" and not m["is_self"] and text:
+            if re.search(r"@\s*" + re.escape(self.nick), text):
+                segments.append({"type": "at", "data": {"qq": self.self_id, "name": self.nick}})
+        # A successfully captured image already becomes an Image component.
+        # Keep a pure-image placeholder only when capture failed.
+        if text and not (image_paths and text.strip() == "[" + qq_uia.IMAGE_TAG + "]"):
+            segments.append({"type": "text", "data": {"text": text}})
+        for image_path in image_paths:
+            segments.append({
+                "type": "image",
+                "data": {"file": Path(image_path).resolve().as_uri()},
+            })
+        base = {
+            "post_type": "message",
+            "time": now_ts(),
+            "self_id": int(self.self_id) if self.self_id.isdigit() else 0,
+            "message_id": self.next_msg_id(),
+            "message": segments,
+            "raw_message": text,
+            "font": 0,
+            "sender": {
+                "user_id": int(uid) if str(uid).isdigit() else 0,
+                "nickname": nickname,
+                "card": nickname,
+                "role": "member",
+            },
+        }
+        if chat["kind"] == "group":
+            base.update({
+                "message_type": "group",
+                "sub_type": "normal",
+                "group_id": int(gid) if str(gid).isdigit() else 0,
+                "group_name": chat["name"],
+            })
+        else:
+            base.update({
+                "message_type": "private",
+                "sub_type": "friend",
+                "user_id": int(uid) if str(uid).isdigit() else 0,
+            })
+        return base
+
+    # ---------- GUI worker ----------
+
+    @staticmethod
+    def idle_seconds():
+        return user_idle_seconds()
+
+    @staticmethod
+    def hold_awake():
+        """Ask Windows not to sleep while the bridge is up.
+
+        Sleep takes the QQ window down with it and the bot goes quiet until
+        somebody touches the keyboard, which is half of why an untouched
+        machine stops answering. This also survives display-off: the renderer
+        keeps producing the accessibility tree they are read from.
+        """
+        try:
+            import ctypes
+            ES_CONTINUOUS = 0x80000000
+            ES_SYSTEM_REQUIRED = 0x00000001
+            res = ctypes.windll.kernel32.SetThreadExecutionState(
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+            log("keep-awake: system sleep blocked (ok=%s)" % bool(res))
+        except Exception as e:
+            log("keep-awake failed: %s" % e)
+
+    def start(self):
+        self.worker.start()
+
+    def _worker(self):
+        import uiautomation as auto
+        with auto.UIAutomationInitializerInThread():
+            self._worker_body()
+
+    def _worker_body(self):
+        if bool(self.cfg.get("keep_awake", True)):
+            self.hold_awake()
+        last_attach_log = 0.0
+        # WS 断开时绝不碰 QQ：桥接存在的意义是把消息送进 AstrBot，连不上时
+        # 读了也送不出去，而读 = 切窗 = 抢鼠标/弹窗（2026-11-15 事故链）。
+        # 整条工作流（附着 QQ → 巡检 → 轮询）都钉在 WS 连接状态上：未接入
+        # （通道 enabled=false / sn0wbot 没开闸）时桥接只安静重试 WS。
+        while True:
+            if self.ws is None:
+                time.sleep(2.0)
+                continue
+            try:
+                self.backend.connect()
+                break
+            except Exception as e:
+                now = time.time()
+                if now - last_attach_log >= 60:
+                    log("QQ is not visible yet; waiting to attach: %s" % e)
+                    last_attach_log = now
+                time.sleep(5)
+        try:
+            self.prune_outbox()
+            self.selfcheck()
+        except Exception as e:
+            log("initial QQ inspection failed; continuing: %s" % e)
+        interval = float(self.cfg.get("poll_interval", 3.0))
+        last_poll = 0.0
+        while True:
+            try:
+                fn, fut = self.jobs.get(timeout=0.15)
+                try:
+                    result = fn()
+                    if fut is not None:
+                        self.loop.call_soon_threadsafe(fut.set_result, result)
+                except Exception as e:
+                    if fut is not None:
+                        self.loop.call_soon_threadsafe(fut.set_exception, e)
+            except queue.Empty:
+                pass
+            if time.time() - last_poll >= interval and self.jobs.empty():
+                if self.ws is None:
+                    # 会话中途 WS 掉线（sn0wbot 重启 / 通道断开）：立刻停止一切
+                    # QQ 触碰，等 WS 回来再继续。
+                    last_poll = time.time()
+                    continue
+                last_poll = time.time()
+                try:
+                    self.poll_once()
+                except Exception as e:
+                    log("poll error: %s" % e)
+
+    def submit(self, fn):
+        """Run fn on the GUI thread and await its result."""
+        fut = self.loop.create_future()
+        self.jobs.put((fn, fut))
+        return fut
+
+    # ---------- selfcheck ----------
+
+    def selfcheck(self):
+        items = self.backend.session_items()
+        names = {i["name"] for i in items}
+        log("QQ sessions: %s" % ", ".join(sorted(names)))
+        for c in self.chats:
+            here = c["name"] in names
+            log("  configured %-28s [%s] %s" % (
+                c["name"], chat_key(c), "present" if here else "NOT in session list"))
+        log("current conversation: %r" % self.backend.current_chat())
+
+    # ---------- polling ----------
+
+    def poll_once(self):
+        if self.cfg.get("read_mode", "watch") == "watch":
+            self.poll_watch()
+            return
+        for chat in self.chats:
+            self.collect(chat)
+
+    def _changed_chats(self):
+        """In watch mode: configured chats whose session row moved.
+
+        The session list is virtualised, so a configured chat can be missing
+        from the snapshot just because it scrolled out of view. Those are
+        picked up by a slow sweep instead of being ignored, otherwise messages
+        in them would never reach AstrBot.
+        """
+        until = {}
+        for it in self.backend.session_items():
+            until.setdefault(it["name"], it)
+        self.poll_count += 1
+        sweep = bool(self.sweep_every) and (self.poll_count % self.sweep_every == 0)
+        force = max(0.0, float(self.cfg.get("force_read_seconds", 300) or 0))
+        idle_needed = max(0.0, float(self.cfg.get("force_read_idle_seconds", 60) or 0))
+        out = []
+        now = time.time()
+        for chat in self.chats:
+            key = chat_key(chat)
+            if now < self.read_retry_after.get(key, 0.0):
+                continue
+            info = until.get(chat["name"])
+            if info is None:
+                idle = time.time() - self.last_read_ts.get(key, 0.0)
+                if key not in self.history or (sweep and idle >= self.sweep_idle):
+                    out.append(chat)
+                    log("watch: %s is not in the visible session list, reading it anyway" % key)
+                continue
+            marker = (info["preview"], info["time"], info["unread"] > 0)
+            prev = self.markers.get(key)
+            self.markers[key] = marker
+            if prev is not None and prev == marker:
+                # 最小化期间不巡检：Chromium 树冻结，读了也是旧画面；而切窗必然
+                # 还原窗口 = 弹窗打扰工作。冻结的未读角标清不掉 → 每 5 分钟
+                # 强读一遍 → 每 5 分钟弹一次窗，就是 2026-11-15 的"QQ 一直跳出来"
+                # 事故循环。等窗口可见时树解冻，正常 watch 会自动补上消息。
+                if self._qq_iconic():
+                    continue
+                # Chromium stops repainting a window that is minimised or fully
+                # covered, and QQ's session row then freezes: the preview and
+                # the unread badge stop moving, so change detection alone waits
+                # forever. Open the chat and read it directly every
+                # force_read_seconds so an idle machine cannot swallow a night.
+                # last_read_ts only tracks this process, so a chat nobody has
+                # read yet says "not read yet" rather than pretending the epoch
+                # is a read time.
+                age = None
+                if key in self.last_read_ts:
+                    age = time.time() - self.last_read_ts[key]
+                # Only while nobody is at the keyboard: opening a chat raises
+                # QQ and clicks, which would interrupt somebody who is typing.
+                # The idle case is the one that silently loses a whole night.
+                if force and (age is None or age >= force) and self.idle_seconds() >= idle_needed:
+                    self.forced_reads.add(key)
+                    out.append(chat)
+                    log("stale sweep: %s %s (machine idle %ds), reading it anyway"
+                        % (key, ("unread for %ds" % int(age)) if age is not None
+                           else "not read since this bridge started", int(self.idle_seconds())))
+                continue
+            out.append(chat)
+        return out
+    def _in_send_hold(self):
+        """True while AstrBot is still delivering a reply burst.
+
+        AstrBot splits a reply into several messages with random pauses between
+        them. Hopping to another conversation to poll in the middle of that
+        burst makes QQ visibly thrash, so read-driven switching waits for the
+        burst to finish and the pending conversations are read afterwards.
+        """
+        hold = float(self.cfg.get("send_hold_seconds", 12) or 0)
+        return hold > 0 and (time.time() - self.last_send_ts) < hold
+
+    def user_active(self):
+        """Someone typed or moved the mouse within the active-gate window."""
+        return self.active_gate > 0 and self.idle_seconds() < self.active_gate
+
+    def _qq_iconic(self):
+        """QQ window minimised? Its Chromium tree is frozen: reads are stale."""
+        hwnd = getattr(getattr(self.backend, "qq", None), "hwnd", 0)
+        if not hwnd:
+            return False
+        try:
+            import ctypes as _ctypes
+            return bool(_ctypes.windll.user32.IsIconic(int(hwnd)))
+        except Exception:
+            return False
+
+    def _wait_user_idle(self, max_wait=120.0):
+        """Block the (serial) send worker until the user stops typing, bounded."""
+        if not self.active_gate:
+            return
+        t0 = time.time()
+        while self.user_active():
+            if time.time() - t0 >= max_wait:
+                log("user still active after %.0fs: sending anyway" % max_wait)
+                return
+            time.sleep(2.0)
+
+    def _send_parts_when_idle(self, chat, parts):
+        """Typing into QQ needs real keyboard focus: never steal it mid-keystroke."""
+        self._wait_user_idle()
+        self.backend.send_parts(chat, parts)
+
+    def poll_watch(self):
+        changed = self._changed_chats()
+        try:
+            active_name = self.backend.current_chat()
+        except Exception:
+            active_name = ""
+        active_chat = next(
+            (chat for chat in self.chats if active_name and chat["name"] == active_name),
+            None,
+        )
+        if active_chat is not None:
+            active_key = chat_key(active_chat)
+            if all(chat_key(chat) != active_key for chat in changed):
+                changed.insert(0, active_chat)
+        if self._in_send_hold():
+            for chat in changed:
+                self.deferred[chat_key(chat)] = chat
+            if changed:
+                log("send hold: keeping QQ on %r, %d conversation(s) queued for later"
+                    % (self.backend.current_chat(), len(self.deferred)))
+            return
+        todo = list(self.deferred.values())
+        self.deferred.clear()
+        queued = {chat_key(c) for c in todo}
+        todo.extend(c for c in changed if chat_key(c) not in queued)
+
+        # 桌面互斥锁（人优先）：用户最近有键鼠输入时只读"当前已打开"的会话
+        # （无切换、无抢焦点）；需要切窗的排队，等输入空闲 ≥ active_gate 秒再处理。
+        if self.active_gate and self.user_active():
+            keep = {chat_key(active_chat)} if active_chat is not None else set()
+            held = [c for c in todo if chat_key(c) not in keep]
+            todo = [c for c in todo if chat_key(c) in keep]
+            for c in held:
+                self.deferred[chat_key(c)] = c
+            if held and not self._gate_logged:
+                log("user active (idle %ds < %.0fs gate): %d conversation(s) deferred, no window raise"
+                    % (self.idle_seconds(), self.active_gate, len(held)))
+                self._gate_logged = True
+        elif not self.user_active():
+            self._gate_logged = False
+
+        origin = self.backend.current_chat()
+        touched = False
+        for chat in todo:
+            key = chat_key(chat)
+            try:
+                self.collect(chat)
+                self.read_retry_after.pop(key, None)
+                touched = True
+            except Exception as e:
+                cooldown = max(
+                    5.0,
+                    float(self.cfg.get("read_error_backoff_seconds", 15) or 15),
+                )
+                self.read_retry_after[key] = time.time() + cooldown
+                log("read error for %s: %s" % (chat["name"], e))
+        if touched and origin and self.cfg.get("restore_after_read", True):
+            if self.backend.current_chat() != origin:
+                try:
+                    self.backend.open_chat_by_name(origin)
+                except Exception as e:
+                    log("could not restore %r: %s" % (origin, e))
+    @staticmethod
+    def _looks_partial(prev_sigs, msgs, sig_fn=sig_of):
+        """Is this snapshot half drawn, or just a shorter view of the chat?
+
+        QQ keeps about one screen of rows per conversation and that screen is
+        not the same size everywhere: the private chat renders nine rows where
+        a group rendered twenty-one. Judging by length alone therefore threw
+        away every private read ("ignoring a short snapshot ... 9 had 21") and
+        private messages stopped reaching AstrBot. A short list is only
+        suspect when its tail does not line up with the previous one.
+        """
+        if not msgs:
+            return True
+        if len(prev_sigs) < 4 or len(msgs) > len(prev_sigs) // 2:
+            return False
+        cur_sigs = [sig_fn(m) for m in msgs]
+        return tail_overlap(prev_sigs, cur_sigs) == 0
+
+    def collect(self, chat):
+        """Read one conversation and push whatever is new to AstrBot."""
+        msgs = self.backend.read_chat(chat)
+        if msgs is None:
+            return
+        key = chat_key(chat)
+        forced = key in self.forced_reads
+        self.forced_reads.discard(key)
+        first_read = key not in self.read_once
+        prev = self.history.get(key)
+        prev_content = self.content_history.get(key)
+
+        # The first snapshot after a bridge restart must not blindly replay
+        # hours of QQ history. When persisted signatures exist, compare the
+        # current screen with them so messages received while the bridge was
+        # down are recovered. With no state, establish a baseline instead.
+        if first_read:
+            if not prev or not prev_content or not self.reported_content.get(key):
+                log("baseline %s after start: %d messages" % (key, len(msgs)))
+                self._remember(key, msgs, chat)
+                self.history[key] = [sig_of(m) for m in msgs][-400:]
+                self.content_history[key] = [
+                    content_sig_of(m, chat) for m in msgs
+                ][-400:]
+                self.read_once.add(key)
+                self.save_state()
+                return
+            log("restart recovery %s: comparing %d visible message(s) with saved state"
+                % (key, len(msgs)))
+
+        prev_shape = prev
+        shape_sig = sig_of
+        if prev and prev_content:
+            runtime_overlap = tail_overlap(prev, [sig_of(m) for m in msgs])
+            if runtime_overlap == 0:
+                prev_shape = prev_content
+                shape_sig = lambda m: content_sig_of(m, chat)
+
+        if self._looks_partial(prev_shape, msgs, shape_sig):
+            # A short view can mean either that Chromium is still repainting or
+            # that every older row really has scrolled off. Re-read it instead
+            # of dropping it forever: a complete page stays aligned, while a
+            # half-rendered one usually changes on the next UIA snapshot.
+            confirmed = None
+            for _ in range(2):
+                time.sleep(0.45)
+                retry = self.backend.read_chat(chat)
+                if retry is None:
+                    continue
+                if (not self._looks_partial(prev_shape, retry, shape_sig)
+                        or short_snapshot_stable(msgs, retry)):
+                    confirmed = retry
+                    break
+                msgs = retry
+            if confirmed is None:
+                # Never block a chat indefinitely. The reported-signature
+                # counter below still suppresses anything already delivered.
+                confirmed = msgs
+                log("short snapshot for %s changed while reading; accepting latest view (%d messages, had %d)"
+                    % (key, len(msgs), len(prev)))
+            else:
+                log("short snapshot for %s confirmed after redraw (%d messages, had %d)"
+                    % (key, len(confirmed), len(prev)))
+            msgs = confirmed
+
+        self.last_read_ts[key] = time.time()
+        fresh, trusted = diff_since(prev, msgs)
+        if not trusted and prev_content:
+            content_fresh, content_trusted = diff_since(
+                prev_content,
+                msgs,
+                sig_fn=lambda m: content_sig_of(m, chat),
+            )
+            if content_trusted:
+                if content_fresh:
+                    log("reconciled repainted snapshot for %s: %d new message(s)"
+                        % (key, len(content_fresh)))
+                fresh = content_fresh
+                trusted = True
+
+        cur_sigs = [sig_of(m) for m in msgs]
+        cur_content = [content_sig_of(m, chat) for m in msgs]
+        if trusted:
+            if len(cur_sigs) >= len(prev):
+                self.history[key] = cur_sigs[-400:]
+            else:
+                # A shorter but valid tail view: keep the older signatures so
+                # the next full snapshot does not look like a flood of new
+                # messages, and append only what this read actually added.
+                self.history[key] = (list(prev) + [sig_of(m) for m in fresh])[-400:]
+        else:
+            # Chromium can replace every RuntimeId after QQ reopens or repaints.
+            # Do not discard the whole screen: use the persisted content counter
+            # to keep only occurrences that have not already reached AstrBot.
+            # Duplicate content remains valid when the current screen contains
+            # more occurrences than the previous one.
+            untrusted_limit = max(
+                0,
+                int(self.cfg.get("max_untrusted_snapshot_messages", 50) or 0),
+            )
+            if untrusted_limit and len(fresh) > untrusted_limit:
+                log("untrusted snapshot for %s: %d candidates; ignoring it to prevent replay"
+                    % (key, len(fresh)))
+                self.history[key] = cur_sigs[-400:]
+                self.content_history[key] = cur_content[-400:]
+                self.read_once.add(key)
+                self.save_state()
+                return
+            already = collections.Counter(self.reported.get(key) or {})
+            already_content = collections.Counter(self.reported_content.get(key) or {})
+            kept = []
+            for m in fresh:
+                runtime_sig = sig_of(m)
+                content_sig = content_sig_of(m, chat)
+                if already[runtime_sig] > 0:
+                    already[runtime_sig] -= 1
+                    continue
+                if already_content[content_sig] > 0:
+                    already_content[content_sig] -= 1
+                    continue
+                kept.append(m)
+            source = "forced read" if forced else "untrusted snapshot"
+            log("%s for %s recovered %d of %d unrecorded message(s)"
+                % (source, key, len(kept), len(msgs)))
+            fresh = kept
+            self.history[key] = cur_sigs[-400:]
+
+        if trusted and len(cur_content) < len(prev_content or []):
+            self.content_history[key] = (
+                list(prev_content or [])
+                + [content_sig_of(m, chat) for m in fresh]
+            )[-400:]
+        else:
+            self.content_history[key] = cur_content[-400:]
+
+        for m in fresh:
+            self._mark_reported(key, m, chat)
+            if m["is_self"] and not self.emit_self:
+                continue
+            text = m.get("text", "")
+            # Reading is never blocked: the bot hears everything even while its
+            # gate is down, so it can pick the thread back up when the timer ends.
+            self.mute_scan(key, chat, text)
+            if self.mute_hide_inbound(key, text):
+                continue
+            self.emit(self.build_event(chat, m))
+        self.read_once.add(key)
+        if first_read or fresh:
+            self.save_state()
+
+    def _mark_reported(self, key, m, chat=None):
+        counter = self.reported.setdefault(key, collections.Counter())
+        order = self.reported_order.setdefault(key, collections.deque())
+        sig = sig_of(m)
+        content_counter = self.reported_content.setdefault(key, collections.Counter())
+        content_order = self.reported_content_order.setdefault(key, collections.deque())
+        content_sig = content_sig_of(m, chat)
+        counter[sig] += 1
+        order.append(sig)
+        content_counter[content_sig] += 1
+        content_order.append(content_sig)
+        while len(order) > 500:
+            old = order.popleft()
+            if counter[old] > 0:
+                counter[old] -= 1
+                if counter[old] == 0:
+                    del counter[old]
+        while len(content_order) > 500:
+            old = content_order.popleft()
+            if content_counter[old] > 0:
+                content_counter[old] -= 1
+                if content_counter[old] == 0:
+                    del content_counter[old]
+
+    def _remember(self, key, msgs, chat=None):
+        for m in msgs:
+            self._mark_reported(key, m, chat)
+
+    # ---------- dedupe state that survives a restart ----------
+
+    def load_state(self):
+        """Reload what the previous process already reported.
+
+        The dedupe structures above live in memory. Without this, a restart
+        starts from an empty set, and the first snapshot can look like a burst
+        of new messages even though they were answered before the restart -
+        which made the model answer the same message twice.
+        """
+        path = getattr(self, "state_path", "")
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+        except Exception as e:
+            log("could not read dedupe state %s: %s" % (path, e))
+            return
+        try:
+            state_version = int(blob.get("version") or 1)
+        except (TypeError, ValueError):
+            state_version = 1
+        content_state_current = state_version >= STATE_VERSION
+        window = max(float(self.cfg.get("dedupe_window_seconds", 180) or 0), 60.0)
+        now = time.time()
+        loaded = 0
+        rebuilt_content = 0
+        for key, item in (blob.get("chats") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                hist = [(bool(s[0]), str(s[1])) for s in (item.get("history") or [])]
+                if hist:
+                    self.history[key] = hist[-400:]
+                content_hist = []
+                if content_state_current:
+                    content_hist = [
+                        (bool(s[0]), str(s[1]))
+                        for s in (item.get("content_history") or [])
+                    ]
+                    if content_hist:
+                        self.content_history[key] = content_hist[-400:]
+                counter = collections.Counter()
+                for entry in (item.get("reported") or []):
+                    counter[(bool(entry[0]), str(entry[1]))] += int(entry[2])
+                if counter:
+                    self.reported[key] = counter
+                if content_state_current:
+                    content_counter = collections.Counter()
+                    for entry in (item.get("reported_content") or []):
+                        content_counter[(bool(entry[0]), str(entry[1]))] += int(entry[2])
+                    if not content_counter:
+                        # Older current-version state files only have history.
+                        content_counter.update(content_hist)
+                    if content_counter:
+                        self.reported_content[key] = content_counter
+                        self.reported_content_order[key] = collections.deque(
+                            content_counter.elements()
+                        )
+                else:
+                    rebuilt_content += 1
+                recent = collections.deque(maxlen=300)
+                for text, ts in (item.get("recent") or []):
+                    if now - float(ts) < window:
+                        recent.append((str(text), float(ts)))
+                if recent:
+                    self.recent_text[key] = recent
+                loaded += 1
+            except Exception:
+                continue
+        if loaded:
+            if rebuilt_content:
+                log("dedupe state v%d upgraded: rebuilt stable content signatures "
+                    "for %d chat(s) without replaying their current history"
+                    % (STATE_VERSION, rebuilt_content))
+            log("dedupe state restored for %d chat(s)" % loaded)
+
+    def save_state(self):
+        """Write the dedupe structures so the next start inherits them."""
+        path = getattr(self, "state_path", "")
+        if not path:
+            return
+        window = max(float(self.cfg.get("dedupe_window_seconds", 180) or 0), 60.0)
+        now = time.time()
+        chats = {}
+        for key, hist in self.history.items():
+            counter = self.reported.get(key) or collections.Counter()
+            content_counter = self.reported_content.get(key) or collections.Counter()
+            recent = self.recent_text.get(key) or collections.deque()
+            chats[key] = {
+                "history": [[bool(s[0]), s[1]] for s in hist[-400:]],
+                "content_history": [
+                    [bool(s[0]), s[1]]
+                    for s in (self.content_history.get(key) or [])[-400:]
+                ],
+                "reported": [[bool(s[0]), s[1], int(n)] for s, n in counter.items()],
+                "reported_content": [
+                    [bool(s[0]), s[1], int(n)]
+                    for s, n in content_counter.items()
+                ],
+                "recent": [[t, ts] for t, ts in recent if now - ts < window],
+            }
+        tmp = path + ".tmp"
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"version": STATE_VERSION, "chats": chats}, fh,
+                          ensure_ascii=False)
+            os.replace(tmp, path)
+        except Exception as e:
+            log("could not write dedupe state: %s" % e)
+
+    def emit(self, event):
+        text = event.get("raw_message", "")
+        log("EVENT %s from %s: %s" % (
+            event.get("message_type"), event["sender"]["nickname"], text[:60]))
+        if self.ws is None:
+            return
+        payload = json.dumps(event, ensure_ascii=False)
+        asyncio.run_coroutine_threadsafe(self.ws.send(payload), self.loop)
+
+    # ---------- mute gate ----------
+
+    def mute_hit(self, text):
+        """The keyword that asked the bot to stop talking, or None."""
+        blob = str(text or "")
+        if not blob.strip():
+            return None
+        low = blob.lower()
+        for kw in self.mute_keywords:
+            if kw.lower() in low:
+                return kw
+        return None
+
+    def mute_armed_here(self, chat, text):
+        """In a group only a message aimed at the bot may arm the gate.
+
+        Friends say "shut up" to each other all day; without this a stray line
+        aimed at somebody else would silence the bot for half an hour.
+        """
+        if chat["kind"] != "group" or not self.mute_require_nick:
+            return True
+        blob = str(text or "")
+        if re.search(r"@\s*" + re.escape(self.nick), blob):
+            return True
+        return any(name in blob for name in self.mute_names)
+
+    def mute_minutes(self):
+        return max(1, int(round(self.mute_seconds / 60.0)))
+
+    def mute_remaining(self, key):
+        return max(0, int(round(self.muted_until.get(key, 0.0) - time.time())))
+
+    def is_muted(self, key):
+        until = self.muted_until.get(key)
+        if until is None:
+            return False
+        if until <= time.time():
+            self.muted_until.pop(key, None)
+            self.mute_log_ts.pop(key, None)
+            log("MUTE OFF %s: the %d min timer ran out" % (key, self.mute_minutes()))
+            return False
+        return True
+
+    def mute_chat(self, key, name, keyword):
+        rearmed = key in self.muted_until
+        self.muted_until[key] = time.time() + self.mute_seconds
+        log("MUTE ON  %s (%s) for %d min - heard %r%s"
+            % (key, name, self.mute_minutes(), keyword,
+               " (timer restarted)" if rearmed else ""))
+
+    def mute_scan(self, key, chat, text):
+        """Arm (or re-arm) the gate when this message tells the bot to shut up."""
+        if not self.mute_enabled:
+            return False
+        keyword = self.mute_hit(text)
+        if keyword and self.mute_armed_here(chat, text):
+            self.mute_chat(key, chat["name"], keyword)
+            return True
+        return False
+
+    def mute_hide_inbound(self, key, text):
+        """True when this message should be kept from AstrBot as well.
+
+        Off by default, because the gate is about the bot's mouth, not its ears:
+        the conversation keeps flowing into AstrBot so memory and context stay
+        whole, and only the reply is stopped. Turn mute_swallow_inbound on if a
+        conversation should go fully dark instead.
+        """
+        if not self.mute_enabled or not self.mute_swallow_inbound:
+            return False
+        if not self.is_muted(key):
+            return False
+        now = time.time()
+        if now - self.mute_log_ts.get(key, 0.0) > 60:
+            self.mute_log_ts[key] = now
+            log("MUTE HIDE %s: swallowing %r (%ds left)"
+                % (key, str(text)[:40], self.mute_remaining(key)))
+        return True
+
+    # ---------- action handling ----------
+
+    async def handle_action(self, action, params):
+        if action in ("send_msg", "send_group_msg", "send_private_msg"):
+            return await self.do_send(action, params)
+        if action == "get_login_info":
+            return self.ok({"user_id": int(self.self_id) if self.self_id.isdigit() else 0,
+                            "nickname": self.nick})
+        if action in ("get_stranger_info", "get_group_member_info"):
+            uid = str(params.get("user_id") or params.get("qq") or "")
+            chat = self.by_key.get("group:" + str(params.get("group_id"))) \
+                if params.get("group_id") else None
+            name = self.members_of(chat).get(uid) if chat else None
+            name = name or self.name_for(uid)
+            return self.ok({"user_id": int(uid) if uid.isdigit() else 0,
+                            "nickname": name, "card": name,
+                            "nick": name, "sex": "unknown", "age": 0})
+        if action == "get_group_info":
+            gid = str(params.get("group_id", ""))
+            c = self.by_key.get("group:" + gid)
+            return self.ok({"group_id": int(gid) if gid.isdigit() else 0,
+                            "group_name": c["name"] if c else "", "member_count": 0,
+                            "max_member_count": 0})
+        if action == "get_group_list":
+            data = []
+            for c in self.chats:
+                if c["kind"] == "group":
+                    data.append({"group_id": int(c["id"]), "group_name": c["name"],
+                                 "member_count": 0, "max_member_count": 0})
+            return self.ok(data)
+        if action == "get_friend_list":
+            data = []
+            for c in self.chats:
+                if c["kind"] == "private":
+                    data.append({"user_id": int(c["id"]), "nickname": c["name"],
+                                 "remark": c["name"]})
+            return self.ok(data)
+        if action == "get_group_member_list":
+            gid = str(params.get("group_id", ""))
+            chat = self.by_key.get("group:" + gid)
+            data = []
+            if chat is not None:
+                for uid, name in self.members_of(chat).items():
+                    data.append({"user_id": int(uid) if uid.isdigit() else 0,
+                                 "nickname": name, "card": name, "role": "member"})
+            return self.ok(data)
+        if action in ("get_version_info", "get_status"):
+            return self.ok({"app_name": "uia-bridge", "app_version": "0.2",
+                            "protocol_version": "v11", "good": True, "online": True})
+        if action in ("can_send_image", "can_send_record", "send_like",
+                      "set_msg_emoji_like", "delete_msg", "set_group_ban",
+                      "set_group_whole_ban"):
+            return self.ok({})
+        return self.ok({})
+
+    @staticmethod
+    def ok(data):
+        return {"status": "ok", "retcode": 0, "data": data}
+
+    @staticmethod
+    def failed(reason=""):
+        if reason:
+            log("SEND REFUSED: %s" % reason)
+        return {"status": "failed", "retcode": 100, "data": None}
+
+    async def do_send(self, action, params):
+        if action == "send_msg":
+            if params.get("message_type") == "group" or params.get("group_id"):
+                action = "send_group_msg"
+            else:
+                action = "send_private_msg"
+        if action == "send_group_msg":
+            key = "group:" + str(params.get("group_id"))
+        else:
+            key = "private:" + str(params.get("user_id"))
+        chat = self.by_key.get(key)
+        if chat is None:
+            return self.failed("no chat configured for %s (text=%r)"
+                               % (key, message_to_text(params.get("message"))[:40]))
+        if self.is_ambiguous(chat):
+            return self.failed("%r is configured twice, so the session list cannot "
+                               "tell the two rows apart (key %s)" % (chat["name"], key))
+
+        if self.mute_enabled and self.is_muted(key):
+            # Answer "ok" on purpose: a failed retcode makes AstrBot retry, and
+            # staying quiet is the whole point of the gate.
+            log("MUTE BLOCK %s: dropping %r (%ds left)"
+                % (key, message_to_text(params.get("message"))[:40], self.mute_remaining(key)))
+            return self.ok({"message_id": self.next_msg_id()})
+
+        for seg in (params.get("message") or []):
+            if isinstance(seg, dict) and seg.get("type") in ("record", "video", "file"):
+                log("WARN: %s to %s cannot be sent through the UI (only text and images "
+                    "can); dropping it" % (seg.get("type"), key))
+        parts = []
+        for kind, payload in parse_parts(params.get("message")):
+            if kind == "text":
+                if payload.strip():
+                    parts.append(("text", payload))
+                continue
+            path = self.resolve_image(payload)
+            if path:
+                parts.append(("image", path))
+            else:
+                log("WARN: dropping an image AstrBot asked to send to %s "
+                    "(could not turn the segment into a file)" % key)
+        if not parts:
+            return self.ok({"message_id": self.next_msg_id()})
+
+        log("SEND -> %s : %s" % (chat["name"], describe_parts(parts)))
+        if self.dry_run:
+            return self.ok({"message_id": self.next_msg_id()})
+        try:
+            await self.submit(lambda: self._send_parts_when_idle(chat, parts))
+        except Exception as e:
+            return self.failed("could not deliver to %s: %s" % (key, e))
+        self.last_send_ts = time.time()
+        return self.ok({"message_id": self.next_msg_id()})
+    # ---------- websocket ----------
+
+    def headers(self):
+        h = {"X-Client-Role": "universal", "X-Self-ID": str(self.self_id)}
+        token = (self.cfg.get("token") or "").strip()
+        if token:
+            h["Authorization"] = "Bearer " + token
+        return h
+
+    def self_int(self):
+        return int(self.self_id) if self.self_id.isdigit() else 0
+
+    async def send_lifecycle(self):
+        ev = {
+            "post_type": "meta_event", "meta_event_type": "lifecycle",
+            "sub_type": "connect", "time": now_ts(),
+            "self_id": self.self_int(),
+        }
+        await self.ws.send(json.dumps(ev))
+
+    async def heartbeat_loop(self):
+        while True:
+            await asyncio.sleep(20)
+            if self.ws is None:
+                continue
+            ev = {
+                "post_type": "meta_event", "meta_event_type": "heartbeat",
+                "time": now_ts(), "interval": 20000,
+                "self_id": self.self_int(),
+                "status": {"online": True, "good": True},
+            }
+            try:
+                await self.ws.send(json.dumps(ev))
+            except Exception:
+                return
+
+    async def run(self):
+        self.loop = asyncio.get_running_loop()
+        self.start()
+        url = self.cfg["ws_url"]
+        log("connecting to %s as self_id=%s" % (url, self.self_id))
+        while True:
+            try:
+                async with websockets.connect(url, additional_headers=self.headers(),
+                                              ping_interval=20, ping_timeout=20,
+                                              max_size=None) as ws:
+                    self.ws = ws
+                    log("connected to AstrBot")
+                    await self.send_lifecycle()
+                    hb = asyncio.create_task(self.heartbeat_loop())
+                    try:
+                        async for raw in ws:
+                            try:
+                                obj = json.loads(raw)
+                            except Exception:
+                                continue
+                            if "action" in obj:
+                                res = await self.handle_action(obj["action"], obj.get("params") or {})
+                                res["echo"] = obj.get("echo")
+                                await ws.send(json.dumps(res, ensure_ascii=False))
+                    finally:
+                        hb.cancel()
+                        self.ws = None
+            except Exception as e:
+                log("ws error: %s" % e)
+            log("reconnecting in 5s ...")
+            await asyncio.sleep(5)
+
+
+def single_instance_name(config_path):
+    """Mutex name shared with the start/watch scripts (config name, cleaned)."""
+    stem = os.path.splitext(os.path.basename(str(config_path)))[0]
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", stem) or "default"
+    return "onebot_uia_bridge_" + safe
+
+
+def claim_single_instance(config_path):
+    """Take a named-mutex lease for this config; False if one is already held.
+
+    Two bridges pointed at one AstrBot make every message arrive twice: AstrBot
+    does not dedupe across WebSocket clients, and both copies also drive the
+    same QQ window. Scanning the process list cannot see a bridge whose command
+    line is unreadable, so the lease lives in the kernel instead, where every
+    process on the machine sees the same object.
+
+    Returns the mutex handle (hold it for the process lifetime), None when the
+    platform offers no mutex, or False when another bridge already holds it.
+    """
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    ERROR_ALREADY_EXISTS = 183
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    name = single_instance_name(config_path)
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        log("could not create the single-instance mutex %s (error %s)"
+            % (name, ctypes.get_last_error()))
+        return None
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    return handle
+
+
+def main():
+    ap = argparse.ArgumentParser(description="UIA -> OneBot v11 bridge for AstrBot")
+    ap.add_argument("--config", default=DEFAULT_CONFIG)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--selfcheck", action="store_true",
+                    help="attach to QQ, report config vs live sessions, then exit")
+    args = ap.parse_args()
+    if not args.selfcheck:
+        # --selfcheck only reads QQ and never opens a socket, so it may run next
+        # to a live bridge; every other mode must be the only one for a config.
+        guard = claim_single_instance(args.config)
+        if guard is False:
+            log("another bridge is already running for %s - refusing to start" % args.config)
+            log("two bridges on one AstrBot deliver every message twice")
+            log("run scripts\\stop-bridge.ps1 first if you really want a new one")
+            sys.exit(3)
+    with open(args.config, encoding="utf-8") as f:
+        cfg = json.load(f)
+    bridge = Bridge(cfg, dry_run=args.dry_run)
+    if args.selfcheck:
+        import uiautomation as auto
+        with auto.UIAutomationInitializerInThread():
+            bridge.backend.connect()
+            bridge.selfcheck()
+        return
+    try:
+        asyncio.run(bridge.run())
+    except KeyboardInterrupt:
+        log("stopped")
+
+
+if __name__ == "__main__":
+    main()

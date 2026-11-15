@@ -1673,6 +1673,18 @@ export function createApp({ log = console.log } = {}) {
     }
     await channelManager.startAll();   // 通道启停统一入口；QQ 通道内部调 onebot.connect()
 
+    // QQ 已接入 → 自动拉起桥接进程。修复"重启电脑后机器人静默死亡"：
+    // enabled=true 只让反向 WS 开闸，桥接进程不会自己回来（它不是服务，
+    // 是 ps1 拉起的常驻进程）——启动时补一笔，桥接进程自身有互斥体，
+    // 已在跑就自动退出，重复拉起无副作用。
+    if (getConfig()?.channels?.qq?.enabled === true) {
+      try {
+        const { spawnBridgeProcess } = await import('./channels/qq/bridge-process.js');
+        const note = spawnBridgeProcess('start-bridge.ps1');
+        log(`[channels] 桥接自启：${note}`);
+      } catch { /* 拉起失败不阻断启动；通道页可见未连接状态 */ }
+    }
+
     // ── OneBot 端口就绪轮询（2026-09-19）────────────────────────────────────
     // WS 3001 只有「QQ 登录 → Hook 检出 → OneBot 实例拉起」后才监听。常见时序：
     // QQ Agent 先启动（此时 3001 未开）→ connectLoop 吃 ECONNREFUSED → 退避

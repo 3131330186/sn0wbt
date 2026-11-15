@@ -546,6 +546,9 @@ export function deepMerge(base, override) {
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return structuredClone(override);
   const out = Array.isArray(base) ? [...base] : { ...base };
   for (const [key, value] of Object.entries(override)) {
+    // 原型污染防护：__proto__/constructor/prototype 键一律跳过 —— 恶意配置
+    // 补丁（远程+令牌场景）不该有能力改写对象原型。
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     // 整体替换约定：{ __replace__: X } → 该键直接用 X，不做递归合并。
     // 用于映射型字段（如 api.modelPrices）需要"删掉旧键"的场景 ——
     // 普通深合并传 {} 是删不掉已有键的。
