@@ -24,6 +24,9 @@
       "!test/**",
       "!doc/**",
       "!dist/**",
+      "!bridges/**",
+      "!napcat/**",
+      "!logs/**",
       "!**/*.map",
       "!package-lock.json.bak",
       "!*.log"
