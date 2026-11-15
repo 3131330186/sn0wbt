@@ -312,7 +312,7 @@ fs.writeFileSync(path.join(staging, 'README-portable.txt'), [
   'QQ 便携运行文件',
   '================',
   '',
-  '这是把一份正常安装的 QQ 复制出来的运行文件，用于配合 QQ Agent 的便携运行',
+  '这是把一份正常安装的 QQ 复制出来的运行文件，用于配合 sn0wbot 的便携运行',
   '（启动时带 --user-data-dir，与系统里已安装的 QQ 互不影响）。',
   '',
   '! 重要：QQ 是腾讯公司的专有软件，版权与许可归腾讯所有。',

@@ -24,7 +24,7 @@ function logsDir() {
 
 function todayFile() {
   const d = new Date();
-  const name = `qq-agent-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.log`;
+  const name = `sn0wbot-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.log`;
   return path.join(logsDir(), name);
 }
 

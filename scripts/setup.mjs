@@ -205,7 +205,7 @@ async function installSnowluma() {
   try {
     const apiUrl = `https://api.github.com/repos/${SNOWLUMA_REPO}/releases/tags/${SNOWLUMA_VERSION}`;
     log('查询 SnowLuma Release:', apiUrl);
-    const res = await fetch(apiUrl, { headers: { 'User-Agent': 'qq-agent-setup' } });
+    const res = await fetch(apiUrl, { headers: { 'User-Agent': 'sn0wbot-setup' } });
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
     const rel = await res.json();
     const asset = (rel.assets ?? []).find((a) => a.name === SNOWLUMA_ASSET);
@@ -918,7 +918,7 @@ async function main() {
     process.exit(1);
   }
 
-  log('=== QQ Agent Setup ===');
+  log('=== sn0wbot Setup ===');
   log(`SnowLuma: ${SNOWLUMA_VERSION}`);
   log(`QQ:       ${QQ_VERSION}`);
   log(`工作目录: ${ROOT}`);
@@ -942,7 +942,7 @@ async function main() {
   const checks = [
     ['SnowLuma index.mjs', fs.existsSync(path.join(SNOWLUMA_DIR, 'index.mjs'))],
     ['SnowLuma node.exe', fs.existsSync(path.join(SNOWLUMA_DIR, 'node.exe'))],
-    ['QQ Agent src/app.js', fs.existsSync(path.join(ROOT, 'src', 'app.js'))],
+    ['sn0wbot src/app.js', fs.existsSync(path.join(ROOT, 'src', 'app.js'))],
   ];
   if (!SKIP_QQ) {
     checks.push(['便携 QQ QQ.exe', fs.existsSync(path.join(QQ_PORTABLE_DIR, 'QQ.exe'))]);

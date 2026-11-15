@@ -158,7 +158,7 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
             <span class="dot ${running ? 'dot-on' : 'dot-off'}"></span>
             <span>SnowLuma：<strong>${running ? '运行中' : '未运行'}</strong></span>
             ${pid ? `<span class="muted">pid ${pid}</span>` : ''}
-            <span class="muted">${embedded ? '内置模式（随 QQ Agent 退出）' : (running ? '独立模式' : '')}</span>
+            <span class="muted">${embedded ? '内置模式（随 sn0wbot 退出）' : (running ? '独立模式' : '')}</span>
           </div>
           <div class="snowluma-state-row">
             <span class="dot ${onebotConnected ? 'dot-on' : 'dot-off'}"></span>

@@ -191,7 +191,7 @@ async function index() {
     if (!fs.existsSync(idx)) die(`index 没有产出 ${MODEL}.index（退出码 ${r.code}），以产物为准：${(r.err || r.out).slice(-300)}`);
   }
   say(`\n[OK] 模型 ${MODEL} 就绪：${MODEL_DIR}`);
-  say('  下一步：data/config.json 的 speech.singing.model 改为 "' + MODEL + '"，重启 QQ Agent');
+  say('  下一步：data/config.json 的 speech.singing.model 改为 "' + MODEL + '"，重启 sn0wbot');
   say('  （让维护者操作也行；老模型 ' + 'lochness-voice' + ' 保留着，随时能切回去）');
 }
 

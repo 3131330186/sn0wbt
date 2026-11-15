@@ -30,7 +30,7 @@ async function resolveLoopbackDevice(cfg) {
 
 const cfg = loadConfig();
 const loopbackDevice = await resolveLoopbackDevice(cfg);
-console.log('════ QQ Agent 语音通话 · CLI 跑通器 ════');
+console.log('════ sn0wbot 语音通话 · CLI 跑通器 ════');
 console.log(`接收B(loopback): ${loopbackDevice || '✗ 未找到——去探针里 bl 选一次或写 config.voiceCall.loopbackDevice'}`);
 if (!loopbackDevice) process.exit(1);
 

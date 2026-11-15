@@ -265,7 +265,7 @@ function requestOnce(url, ip, { asBinary = false, maxBytes = 50000 } = {}) {  re
       method: 'GET',
       headers: {
         host: url.host,
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) qq-agent/1.0',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) sn0wbot/1.0',
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8,image/avif,image/webp,image/*;q=0.8',
         'accept-language': 'zh-CN,zh;q=0.9'
       },
@@ -365,7 +365,7 @@ function requestToFile(url, ip, dest, { limit = Infinity, timeoutMs = 30000 } = 
       method: 'GET',
       headers: {
         host: url.host,
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) qq-agent/1.0',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) sn0wbot/1.0',
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8,image/avif,image/webp,image/*;q=0.8',
         'accept-language': 'zh-CN,zh;q=0.9'
       },

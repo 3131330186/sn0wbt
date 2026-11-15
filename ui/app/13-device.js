@@ -80,7 +80,7 @@ function renderDevicePage(status, cfg) {
     </div>
 
     <div class="field"><label>adb 路径（留空 = 依次找 runtime/platform-tools、Android SDK、PATH）</label>
-      <input type="text" id="cfg-device-adbpath" value="${esc(dev.adbPath || '')}" placeholder="例如 D:\\qq-agent-maintained\\runtime\\platform-tools\\adb.exe" /></div>
+      <input type="text" id="cfg-device-adbpath" value="${esc(dev.adbPath || '')}" placeholder="例如 D:\\sn0wbot\\runtime\\platform-tools\\adb.exe" /></div>
 
     <div class="field"><label>设备白名单 serial（每行一个；留空 = 允许任何在线设备。多台设备轮插建议填上防误连）</label>
       <textarea id="cfg-device-serials" rows="2" placeholder="206f8303">${esc(serialsText)}</textarea>

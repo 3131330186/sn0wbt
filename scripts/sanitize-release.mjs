@@ -315,7 +315,7 @@ if (!SCAN_ONLY) {
   rmrf('reminders.json', '定时提醒');
 
   // 中转目录在系统临时文件夹里（不在项目内），尽力清一次即可
-  const trashRoot = path.join(os.tmpdir(), 'qq-agent-sanitize');
+  const trashRoot = path.join(os.tmpdir(), 'sn0wbot-sanitize');
   if (!DRY && fs.existsSync(trashRoot)) {
     try { fs.rmSync(trashRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
@@ -396,7 +396,8 @@ log('');
 const DATA_KEEP = new Set([
   'config.json',            // resetConfig 已清洗（密钥/白名单/人设全部回出厂）
   'price-feed-cache.json',  // 公开价格表缓存，无个人数据
-  'qq-agent.lock',          // 进程锁（PID 文本）
+  'sn0wbot.lock',          // 进程锁（PID 文本）
+  'qq-agent.lock',          // 旧版进程锁（兼容清理）
   '.trash'                  // rmrf 的中转目录（结尾有硬阻断检查）
 ]);
 function listUncoveredDataEntries() {

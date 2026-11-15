@@ -13,7 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 
-const LOCK_FILE = path.join(DATA_DIR, 'qq-agent.lock');
+const LOCK_FILE = path.join(DATA_DIR, 'sn0wbot.lock');
+const LEGACY_LOCK_FILE = path.join(DATA_DIR, 'qq-agent.lock');   // 旧版锁名（切割前的 QQ Agent）；过渡期双检防双开
 
 /** 进程是否还活着（Windows / POSIX 通用：signal 0 不杀进程，只探测）。 */
 function pidAlive(pid) {
@@ -40,6 +41,17 @@ export function acquireInstanceLock() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   } catch { /* 忽略，下面写文件会再试 */ }
 
+  // 过渡期兼容：旧版（QQ Agent 命名时代）实例的锁还挂在 qq-agent.lock 上，
+  // 新锁文件看不到它 —— 不检查的话新旧版本会在同一数据目录上双开。
+  try {
+    if (fs.existsSync(LEGACY_LOCK_FILE)) {
+      const legacyPid = Number(String(fs.readFileSync(LEGACY_LOCK_FILE, 'utf8')).trim()) || null;
+      if (legacyPid && legacyPid !== process.pid && pidAlive(legacyPid)) {
+        return { ok: false, reason: `已有 sn0wbot 实例在运行（PID ${legacyPid}，旧版锁文件）`, existingPid: legacyPid };
+      }
+    }
+  } catch { /* 读不出就当残留 */ }
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       // wx：仅当文件不存在时创建，已存在则抛 EEXIST —— 原子操作，无竞态窗口
@@ -55,7 +67,7 @@ export function acquireInstanceLock() {
         existingPid = Number(String(fs.readFileSync(LOCK_FILE, 'utf8')).trim()) || null;
       } catch { /* 读不出就当残留 */ }
       if (existingPid && existingPid !== process.pid && pidAlive(existingPid)) {
-        return { ok: false, reason: `已有 QQ Agent 实例在运行（PID ${existingPid}）`, existingPid };
+        return { ok: false, reason: `已有 sn0wbot 实例在运行（PID ${existingPid}）`, existingPid };
       }
       // 残留锁（进程已死 / 锁是自己上次异常留下的）：删掉，下一轮用 wx 重新抢
       try { fs.unlinkSync(LOCK_FILE); } catch { /* 删不掉则下一轮 wx 仍 EEXIST，最终报错 */ }

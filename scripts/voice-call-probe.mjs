@@ -243,7 +243,7 @@ rl.on('line', (line) => {
 rl.on('close', () => { console.log('\n探针退出。'); process.exit(0); });
 
 // ---- 启动 ----
-console.log('════ QQ Agent 语音通话 · 音频探针 ════');
+console.log('════ sn0wbot 语音通话 · 音频探针 ════');
 console.log('已验证：发送A 全链路（1a）；待验证：接收B 回环捕获 + ASR。');
 if (receiveTarget() || Number.isInteger(state.cfg.playbackIndex)) {
   console.log(`已记住：A=${state.cfg.playbackName || '系统默认'}  B(${receiveMode()})=「${receiveTarget() || '未选'}」`);

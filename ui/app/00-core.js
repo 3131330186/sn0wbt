@@ -573,7 +573,7 @@ const USAGE_RANGES = [
   ['all', '全部']
 ];
 
-const CONSOLE_MARKER = 'qq-agent-console';
+const CONSOLE_MARKER = 'sn0wbot-console';
 
 /* ══════════════════════════════════════════════════════════════
    主题（明/暗）—— 「跟随系统」「？」已移除

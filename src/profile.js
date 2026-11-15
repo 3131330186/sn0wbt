@@ -22,5 +22,5 @@ export function portOffset() {
 }
 
 export function describeInstance() {
-  return isSecondary() ? `QQ Agent #${PROFILE_ID}` : 'QQ Agent';
+  return isSecondary() ? `sn0wbot #${PROFILE_ID}` : 'sn0wbot';
 }

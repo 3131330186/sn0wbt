@@ -24,7 +24,7 @@ process.on('uncaughtException', (error) => {
   try {
     // dialog 在 app ready 前也允许调用（Electron 文档保证）。
     dialog.showErrorBox(
-      'QQ Agent 发生未捕获错误',
+      'sn0wbot 发生未捕获错误',
       '程序遇到无法恢复的错误，即将退出。\n\n' +
       String(error?.stack ?? error?.message ?? error) +
       '\n\n完整日志见 data/logs/ 下的当日日志文件。'
@@ -35,7 +35,7 @@ process.on('uncaughtException', (error) => {
 
 // AppUserModelID：让 Windows 把窗口归到「QQ Agent」身份下（任务栏分组/图标/通知），
 // 否则 dev 模式下会被当成裸 electron.exe，钉任务栏变成 electron 图标
-app.setAppUserModelId('cn.kondius.qq-agent');
+app.setAppUserModelId('cn.kondius.sn0wbot');
 
 // ── 验证码网络诊断（2026-09-26）──
 // 渲染层（Chromium 栈）访问 alicdn/aliyuncs 失败但 kondius.cn 通、系统 curl 直连却正常。
@@ -318,7 +318,7 @@ app.whenReady().then(async () => {
     // 2026-09-23：启动失败必须可见。之前只 quit，用户看到的是"双击没反应"。
     try {
       dialog.showErrorBox(
-        'QQ Agent 启动失败',
+        'sn0wbot 启动失败',
         '核心服务启动失败，程序即将退出。\n\n' +
         String(error?.stack ?? error?.message ?? error) +
         '\n\n详细日志见 data/logs/ 下的当日日志与 data/boot-diag.log。'

@@ -882,21 +882,21 @@ c.section('13. 安全回归');
   });
 
   await c.check('密钥接口：本机控制台（带 console 标记头）可读取', async () => {
-    const r = await hit('GET', '/api/api-key', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const r = await hit('GET', '/api/api-key', { headers: { 'x-console-token': 'sn0wbot-console' } });
     assert.equal(r.status, 200, `本机控制台应放行，实际 ${r.status}`);
     assert.ok('apiKey' in r.data, '应返回 apiKey 字段');
   });
 
   await c.check('GET /api/search-key：未知搜索服务返回 400', async () => {
-    const r = await hit('GET', '/api/search-key?field=不存在的服务', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const r = await hit('GET', '/api/search-key?field=不存在的服务', { headers: { 'x-console-token': 'sn0wbot-console' } });
     assert.equal(r.status, 400);
   });
 
   await c.check('GET /api/onebot-token：控制台可读令牌明文 + 未知类型 400', async () => {
-    const ok1 = await hit('GET', '/api/onebot-token?which=ws', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const ok1 = await hit('GET', '/api/onebot-token?which=ws', { headers: { 'x-console-token': 'sn0wbot-console' } });
     assert.equal(ok1.status, 200, `控制台读取应放行，实际 ${ok1.status}`);
     assert.ok('token' in ok1.data, '应返回 token 字段');
-    const bad = await hit('GET', '/api/onebot-token?which=玄学', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const bad = await hit('GET', '/api/onebot-token?which=玄学', { headers: { 'x-console-token': 'sn0wbot-console' } });
     assert.equal(bad.status, 400, '未知令牌类型应 400');
   });
 

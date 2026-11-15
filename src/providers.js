@@ -210,7 +210,7 @@ function withResolvedKey(p, cfg = getConfig()) {
  *  中转站转发时域名不是 opencode.ai，要靠模型 id 的 opencode-go/ 前缀识别。 */
 function opencodeHeaders(baseUrl, model = '') {
   if (!/opencode\.ai/i.test(String(baseUrl)) && !/^opencode-go\//i.test(String(model || ''))) return {};
-  return { 'x-opencode-session': `qqagent-probe-${process.pid}`, 'user-agent': 'qq-agent/0.4' };
+  return { 'x-opencode-session': `qqagent-probe-${process.pid}`, 'user-agent': 'sn0wbot/0.8' };
 }
 
 /** 用指定 baseUrl/key 获取模型列表（OpenAI /models）。 */

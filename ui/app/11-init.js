@@ -17,7 +17,7 @@ $$('.tab').forEach((tab) => {
     $('#theme-btn')?.addEventListener('click', cycleTheme);
 
     // 启动 loading：先等 HTTP 服务可用（页面可能先于服务打开）
-    setLoadingStatus('正在启动 QQ Agent 服务…');
+    setLoadingStatus('正在启动 sn0wbot 服务…');
     await bootLoop();
     // 主题：以后端配置为准（跨设备同步），仅当后端确实存过才覆盖本地
     try {

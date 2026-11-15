@@ -260,7 +260,7 @@ FunctionEnd
   ; 只有用户手动卸载（非静默）才弹窗问。
   ${IfNot} ${Silent}
   ${AndIf} ${FileExists} "$INSTDIR\data\*.*"
-    MessageBox MB_YESNO|MB_ICONQUESTION "卸载将删除 QQ Agent 的全部用户数据（聊天记录 / 配置 / 记忆 / API Key）。$\r$\n$\r$\n卸载前先备份一份吗？$\r$\n（备份到 $LOCALAPPDATA\QQ Agent\upgrade-backup\data-uninstall，数据大可能要几分钟）" IDYES DoUninstDataBackup
+    MessageBox MB_YESNO|MB_ICONQUESTION "卸载将删除 Sn0wBot 的全部用户数据（聊天记录 / 配置 / 记忆 / API Key）。$\r$\n$\r$\n卸载前先备份一份吗？$\r$\n（备份到 $LOCALAPPDATA\QQ Agent\upgrade-backup\data-uninstall，数据大可能要几分钟）" IDYES DoUninstDataBackup
     Goto AfterUninstDataBackup
     DoUninstDataBackup:
     CreateDirectory "$LOCALAPPDATA\QQ Agent\upgrade-backup\data-uninstall"

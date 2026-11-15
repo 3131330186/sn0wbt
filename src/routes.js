@@ -277,7 +277,7 @@ export function createRoutes(deps) {
           const looksLikeDataDir = path.basename(resolved).toLowerCase().startsWith('data')
             || fs.existsSync(path.join(resolved, 'config.json'));
           if (!looksLikeDataDir || resolved === path.parse(resolved).root) {
-            return json(res, 400, { ok: false, error: `数据目录不像 QQ Agent 数据目录，已拒绝重置：${resolved}` });
+            return json(res, 400, { ok: false, error: `数据目录不像 sn0wbot 数据目录，已拒绝重置：${resolved}` });
           }
 
           await orchestrator.abortAll();
@@ -296,7 +296,7 @@ export function createRoutes(deps) {
           // 只清内容，不删目录本身（目录可能被占用/是挂载点）；
           // 跳过 qq-agent.lock —— 那是本进程活着的凭证，删了会让第二个实例误判无锁启动。
           for (const name of fs.readdirSync(resolved)) {
-            if (name === 'qq-agent.lock') continue;
+            if (name === 'sn0wbot.lock' || name === 'qq-agent.lock') continue;
             fs.rmSync(path.join(resolved, name), { recursive: true, force: true });
           }
           const { loadConfig } = await import('./config.js');

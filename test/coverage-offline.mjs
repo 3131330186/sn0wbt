@@ -1099,7 +1099,7 @@ c.section('14. holidays / vision-docs / personas / instance-lock / logger / llm 
   await c.check('instance-lock：锁文件记录持有者 PID，供跨进程互斥判定', () => {
     lock.releaseInstanceLock();
     lock.acquireInstanceLock();
-    const lockFile = path.join(dataDir, 'qq-agent.lock');
+    const lockFile = path.join(dataDir, 'sn0wbot.lock');
     assert.ok(fs.existsSync(lockFile), '抢锁后应生成锁文件');
     const raw = fs.readFileSync(lockFile, 'utf8');
     assert.ok(raw.includes(String(process.pid)), `锁文件应包含本进程 PID，实际内容：${raw}`);
@@ -1111,7 +1111,7 @@ c.section('14. holidays / vision-docs / personas / instance-lock / logger / llm 
   await c.check('instance-lock：另一进程持锁时本进程抢锁失败（真实互斥语义）', async () => {
     const { spawn } = await import('node:child_process');
     lock.releaseInstanceLock();
-    const lockFile = path.join(dataDir, 'qq-agent.lock');
+    const lockFile = path.join(dataDir, 'sn0wbot.lock');
     try { fs.rmSync(lockFile, { force: true }); } catch { /* ignore */ }
 
     const moduleUrl = new URL('../src/instance-lock.js', import.meta.url).href;

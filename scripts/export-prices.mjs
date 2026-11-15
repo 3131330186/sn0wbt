@@ -18,7 +18,7 @@ const out = path.resolve(process.argv[2] || path.join(__dirname, '..', 'prices.j
 
 const payload = {
   updated: new Date().toISOString().slice(0, 10),
-  comment: 'qq-agent 远程价格表。单位：元/百万 token。条目字段：in/out（必填数字）、cached（可 null）、peak/image/note/src（可选）。',
+  comment: 'sn0wbot 远程价格表。单位：元/百万 token。条目字段：in/out（必填数字）、cached（可 null）、peak/image/note/src（可选）。',
   prices: OFFICIAL_PRICES
 };
 

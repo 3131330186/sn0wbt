@@ -1048,7 +1048,7 @@ function renderOnebotSection(c) {
       </div>
       <div class="hint" id="snowluma-hint"></div></div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-snowlumalaunch" ${c.snowluma.autoLaunch ? 'checked' : ''} />
-      <label for="cfg-snowlumalaunch">QQ Agent 启动时自动拉起 SnowLuma（未运行时）</label></div>
+      <label for="cfg-snowlumalaunch">sn0wbot 启动时自动拉起 SnowLuma（未运行时）</label></div>
     <div class="field-row">
       <div class="field"><label>WebSocket 地址（收消息）</label><input type="text" id="cfg-wsurl" value="${esc(c.snowluma.wsUrl)}" /></div>
       <div class="field"><label>HTTP 地址（发消息）</label><input type="text" id="cfg-httpurl" value="${esc(c.snowluma.httpUrl)}" /></div>

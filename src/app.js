@@ -1716,7 +1716,7 @@ export function createApp({ log = console.log } = {}) {
       log(`远程监听已开启：局域网用 http://${ips[0] || '<本机IP>'}:${port}/?token=（你的访问令牌） 打开${ips.length > 1 ? `（其他地址：${ips.slice(1).join('、')}）` : ''}`);
       log('[server] ⚠️ 远程监听已放通：控制台的配置/密钥/存档对持 token 者完全可见，token 请勿外传；不用时把 listenHost 改回 127.0.0.1');
     }
-    log(`OneBot（SnowLuma）: ws=${getConfig().snowluma?.wsUrl} http=${getConfig().snowluma?.httpUrl}`);
+    log(`OneBot 协议端: ws=${getConfig().snowluma?.wsUrl} http=${getConfig().snowluma?.httpUrl}`);
     log(`模型: ${getConfig().api.model || '（未设置，请在设置里选择）'} @ ${getConfig().api.baseUrl}`);
     return port;
   }

@@ -18,7 +18,7 @@ function authHeaders(apiKey, baseUrl = '', model = '') {
   // 走中转站转发时 baseUrl 不是 opencode.ai，只能靠模型 id 的 opencode-go/ 前缀识别。
   if (/opencode\.ai/i.test(String(baseUrl)) || /^opencode-go\//i.test(String(model || ''))) {
     h['x-opencode-session'] = getOpencodeSessionId();
-    h['user-agent'] = 'qq-agent/0.4';   // 官方文档要求客户端自报身份，别用通用库名
+    h['user-agent'] = 'sn0wbot/0.8';   // 官方文档要求客户端自报身份，别用通用库名
   }
   return h;
 }
