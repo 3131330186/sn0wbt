@@ -292,6 +292,9 @@ refs:
     webSearch: { enabled: true, searchUrl: `http://127.0.0.1:${PORTS.onebotHttp}/search`, maxResults: 6 },
     security: { allowPrivateImageHosts: false },
     snowluma: { wsUrl: `ws://127.0.0.1:${PORTS.onebotWs}`, httpUrl: `http://127.0.0.1:${PORTS.onebotHttp}`, accessToken: '' },
+    // 密闭性：本测试自建 config（不经 _harness），必须显式钉回 napcat 后端——
+    // 否则 DEFAULT channels.qq.backend='uia' 会起反向服务端而非连本文件的 mock WS
+    channels: { qq: { backend: 'napcat' } },
     persona: { botName: '审计Bot', participation: 'medium', roleText: '你是审计群里的机器人。' },
     allow: { groups: ['456'], private: ['777'] },
     deny: { groups: [], private: [] },
@@ -780,7 +783,7 @@ refs:
   const chatsRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats`)).json();
   assert.ok(chatsRes.chats.some((c) => c.key === 'group:456'));
   const uiRes = await fetch(`http://127.0.0.1:${cfg.server.port}/`);
-  assert.ok((await uiRes.text()).includes('QQ Agent'), 'UI 首页可访问');
+  assert.ok((await uiRes.text()).includes('sn0wbot'), 'UI 首页可访问（v0.8 起品牌为 sn0wbot）');
   pass('HTTP API：status/models/sessions/chats/UI 全部可用', `今日 ${statusRes.usage.totalTokens} tok`);
 
   // ── 场景 26：群友印象手动整理（逐成员整理 + 按聊天记录过滤 + 备份）──
