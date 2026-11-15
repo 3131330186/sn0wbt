@@ -86,7 +86,93 @@ function renderDashChannels(channels) {
       parts.push(renderDashChannelCard(ch));
     }
   }
+  parts.push(renderDashAddCard());
   node.innerHTML = parts.join('');
+}
+
+/** [+] 添加链接卡：常驻最后一格，点开接入向导。 */
+function renderDashAddCard() {
+  return `
+    <div class="dash-card dash-card-add" data-add="1">
+      <div class="dash-add-plus">＋</div>
+      <div class="dash-add-t1">添加链接</div>
+      <div class="dash-add-t2">接入浏览器 / 邮箱 / 更多软件</div>
+    </div>`;
+}
+
+/** 接入向导弹窗：目录项 → 迷你表单 → 建立链接（成功后驾驶舱自动出新卡）。 */
+async function openChannelConnectModal() {
+  let catalog = [];
+  try {
+    catalog = (await api('/api/channels/catalog')).catalog ?? [];
+  } catch (error) {
+    showAppAlert(`通道目录加载失败：${error?.message ?? error}`);
+    return;
+  }
+  const rowsHtml = catalog.map((item) => `
+    <div class="connect-row" data-channel="${esc(item.id)}">
+      <span class="cr-icon">${esc(item.icon)}</span>
+      <div class="cr-main">
+        <div class="cr-name">${esc(item.label)}
+          ${item.enabled ? '<span class="tag ok">已接入</span>' : ''}
+        </div>
+        <div class="cr-desc">${esc(item.desc)}</div>
+        <div class="cr-form" hidden>
+          ${(item.form ?? []).map((f) => `
+            <label><span>${esc(f.label)}</span>
+              <input type="${esc(f.type ?? 'text')}" data-path="${esc(f.path)}"
+                     placeholder="${esc(f.placeholder ?? '')}" autocomplete="off">
+            </label>`).join('')}
+          ${item.hint ? `<div class="connect-hint">ℹ️ ${esc(item.hint)}</div>` : ''}
+          <div class="connect-err" data-err></div>
+          <div class="connect-foot">
+            <button class="btn primary" data-connect="${esc(item.id)}">${item.enabled ? '更新并重启通道' : '建立链接'}</button>
+          </div>
+        </div>
+      </div>
+      <button class="btn" data-toggle="${esc(item.id)}">${item.enabled ? '管理' : '接入'}</button>
+    </div>`).join('');
+
+  const overlay = modelModalShell({
+    head: '添加链接',
+    body: `<div class="connect-list">${rowsHtml}</div>`,
+    foot: '<span class="muted" style="font-size:11.5px">接入的通道只在链接成功后出现在驾驶舱</span>'
+  });
+
+  // 展开/收起表单
+  overlay.addEventListener('click', async (e) => {
+    const toggle = e.target.closest('[data-toggle]');
+    if (toggle) {
+      const row = toggle.closest('.connect-row');
+      const form = row?.querySelector('.cr-form');
+      if (form) form.hidden = !form.hidden;
+      return;
+    }
+    const btn = e.target.closest('[data-connect]');
+    if (!btn) return;
+    const row = btn.closest('.connect-row');
+    const chId = btn.getAttribute('data-connect');
+    const errNode = row.querySelector('[data-err]');
+    const values = {};
+    row.querySelectorAll('.cr-form input[data-path]').forEach((input) => {
+      values[input.dataset.path] = input.value.trim();
+    });
+    btn.disabled = true;
+    errNode.textContent = '';
+    try {
+      const result = await api(`/api/channels/${encodeURIComponent(chId)}/enable`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: true, config: values })
+      });
+      closeModelModal(overlay);
+      showAppAlert(`${chId === 'mail' ? '邮箱' : chId === 'browser' ? '浏览器' : chId} 链接成功${result.status === 'error' ? '，但通道启动异常，请到通道页查看' : ''} ✓`);
+      refreshDashboard({ quiet: true });
+    } catch (error) {
+      errNode.textContent = `建立链接失败：${error?.message ?? error}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 function renderDashUsage(st) {
@@ -184,6 +270,7 @@ function buildDashSkeleton() {
   document.getElementById('dash-channels')?.addEventListener('click', async (e) => {
     const card = e.target.closest('.dash-card');
     if (!card) return;
+    if (card.dataset.add) { openChannelConnectModal(); return; }   // [+] 接入向导
     if (e.target.closest('.dash-manage')) { switchTab(card.dataset.tabJump ?? 'channels'); return; }
     const chId = card.dataset.channelId;
     if (!chId) return;

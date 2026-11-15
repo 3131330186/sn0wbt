@@ -2125,3 +2125,43 @@ span.rail-group:nth-of-type(5) { color: #ff5da2; }   /* 系统 粉 */
   .tab .tab-lb { display: none; }
   .tab { padding: 9px 0; }
 }
+
+/* ── 驾驶舱 [+] 接入向导（2026-11-15）────────────────────────────────── */
+.dash-card-add {
+  cursor: pointer;
+  border: 1.5px dashed var(--bd);
+  background: color-mix(in srgb, var(--bg1) 70%, transparent);
+  box-shadow: none;
+  animation: none;
+}
+.dash-card-add:hover { border-color: var(--ac); box-shadow: 0 0 18px rgba(255, 122, 89, .12); }
+.dash-card-add .dash-add-plus {
+  width: 40px; height: 40px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 600; color: var(--ac);
+  background: color-mix(in srgb, var(--ac) 12%, transparent);
+  margin-bottom: 8px;
+}
+.dash-card-add .dash-add-t1 { font-size: 13px; font-weight: 600; color: var(--tx); }
+.dash-card-add .dash-add-t2 { font-size: 11.5px; color: var(--tx3); margin-top: 4px; }
+.connect-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 14px; margin-bottom: 10px;
+  background: var(--bg1); border: 1px solid var(--bd); border-radius: var(--r-md);
+}
+.connect-row .cr-icon { font-size: 20px; line-height: 1; margin-top: 2px; }
+.connect-row .cr-main { flex: 1; min-width: 0; }
+.connect-row .cr-name { font-size: 13.5px; font-weight: 600; color: var(--tx); display: flex; align-items: center; gap: 8px; }
+.connect-row .cr-desc { font-size: 12px; color: var(--tx3); margin-top: 4px; line-height: 1.5; }
+.connect-row .cr-form { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.connect-row .cr-form label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--tx2); }
+.connect-row .cr-form label span { width: 84px; flex: none; }
+.connect-row .cr-form input {
+  flex: 1; min-width: 0; padding: 7px 10px;
+  background: var(--bg2); border: 1px solid var(--bd); border-radius: var(--r-sm);
+  color: var(--tx); font-size: 12.5px; outline: none;
+}
+.connect-row .cr-form input:focus { border-color: var(--ac); }
+.connect-hint { font-size: 11.5px; color: var(--tx3); line-height: 1.6; margin-top: 8px; }
+.connect-err { font-size: 12px; color: #ff5da2; margin-top: 8px; min-height: 1em; }
+.connect-foot { display: flex; gap: 10px; margin-top: 12px; }

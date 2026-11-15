@@ -106,6 +106,67 @@ await c.check('stopAll：全部停止且状态回到 stopped', async () => {
   assert.equal(b.status, 'stopped');
 });
 
+// ── 3b. 单通道启停（接入向导：enable 后只动这一个，不惊动其他通道）────────
+await c.check('startChannel：只启动目标通道，其余不受影响；未知 id 抛结构化错误', async () => {
+  const m = new ChannelManager();
+  const a = makeFakeChannel({ id: 'a' });
+  const b = makeFakeChannel({ id: 'b' });
+  m.register(a); m.register(b);
+  await m.startChannel('b');
+  assert.equal(b.__calls.start, 1);
+  assert.equal(b.status, 'started');
+  assert.equal(a.__calls.start, 0);          // a 完全没被动
+  assert.equal(a.status, 'stopped');
+  await assert.rejects(() => m.startChannel('ghost'),
+    (e) => e instanceof ChannelError);
+});
+
+await c.check('stopChannel：只停目标通道；未注册 id 幂等返回', async () => {
+  const m = new ChannelManager();
+  const a = makeFakeChannel({ id: 'a' });
+  const b = makeFakeChannel({ id: 'b' });
+  m.register(a); m.register(b);
+  await m.startAll();
+  await m.stopChannel('a');
+  assert.equal(a.__calls.stop, 1);
+  assert.equal(a.status, 'stopped');
+  assert.equal(b.__calls.stop, 0);           // b 没被停
+  assert.equal(b.status, 'started');
+  await m.stopChannel('ghost');              // 未注册 → 幂等，不抛
+});
+
+// ── 3c. 接入向导目录与表单转换 ─────────────────────────────────────────
+const { CHANNEL_CATALOG, formValuesToChannelPatch, setByPath } = await import('../src/channels/catalog.js');
+
+await c.check('目录：browser/mail 可建立链接，QQ 不在目录（默认已接）', () => {
+  const ids = CHANNEL_CATALOG.map((item) => item.id);
+  assert.ok(ids.includes('browser') && ids.includes('mail'));
+  assert.ok(!ids.includes('qq'), 'qq 是默认通道，不该出现在"可建立链接"目录');
+  for (const item of CHANNEL_CATALOG) {
+    assert.ok(item.label && item.desc && Array.isArray(item.form), `${item.id} 目录项不完整`);
+    for (const f of item.form) assert.ok(f.path && f.label, `${item.id} 表单字段缺 path/label`);
+  }
+});
+
+await c.check('formValuesToChannelPatch：dot-path 打平 + 空值跳过 + 白名单伪字段拆数组', () => {
+  const patch = formValuesToChannelPatch({
+    'imap.host': 'imap.qq.com',
+    'imap.port': '993',
+    'smtp.host': '',
+    allowedFromText: ' boss@corp.com , ^team@ , '
+  });
+  assert.deepEqual(patch, {
+    imap: { host: 'imap.qq.com', port: '993' },
+    allowedFrom: ['boss@corp.com', '^team@']
+  });
+});
+
+await c.check('setByPath：嵌套已有对象不覆盖兄弟键', () => {
+  const o = { imap: { user: 'u' } };
+  setByPath(o, 'imap.host', 'h');
+  assert.deepEqual(o, { imap: { user: 'u', host: 'h' } });
+});
+
 // ── 4. 入站分发 ─────────────────────────────────────────────────────────
 await c.check('入站分发：channelId 自动打戳 + 多订阅者全收', async () => {
   const m = new ChannelManager();

@@ -71,33 +71,47 @@ export class ChannelManager {
   /** 启动全部通道。通道 start() 抛错不拖垮其他通道 —— 状态如实记 error。 */
   async startAll(ctx = {}) {
     for (const channel of this.#channels.values()) {
-      channel.status = 'starting';
-      try {
-        await channel.start({
-          dispatchInbound: (record) => this.#dispatch(channel.id, record),
-          reportStatus: (status) => this.#report(channel.id, status),
-          ...ctx
-        });
-        channel.status = 'started';
-        this.#log(`[channels] 通道 ${channel.id} 已启动`);
-      } catch (error) {
-        channel.status = 'error';
-        channel.lastError = String(error?.message ?? error);
-        this.#log(`[channels] 通道 ${channel.id} 启动失败: ${channel.lastError}`);
-      }
+      await this.startChannel(channel.id, ctx);
+    }
+  }
+
+  /** 启动单个通道（接入向导用：enable 后只拉起这一个，不惊动其他通道/桥接连线）。 */
+  async startChannel(channelId, ctx = {}) {
+    const channel = this.get(channelId);
+    if (!channel) throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, `通道 ${channelId} 未注册`);
+    channel.status = 'starting';
+    try {
+      await channel.start({
+        dispatchInbound: (record) => this.#dispatch(channel.id, record),
+        reportStatus: (status) => this.#report(channel.id, status),
+        ...ctx
+      });
+      channel.status = 'started';
+      this.#log(`[channels] 通道 ${channel.id} 已启动`);
+    } catch (error) {
+      channel.status = 'error';
+      channel.lastError = String(error?.message ?? error);
+      this.#log(`[channels] 通道 ${channel.id} 启动失败: ${channel.lastError}`);
     }
   }
 
   /** 停止全部通道。单个 stop 失败不影响其余通道收尾。 */
   async stopAll() {
     for (const channel of this.#channels.values()) {
-      try {
-        await channel.stop();
-        channel.status = 'stopped';
-      } catch (error) {
-        channel.status = 'error';
-        this.#log(`[channels] 通道 ${channel.id} 停止失败: ${String(error?.message ?? error)}`);
-      }
+      await this.stopChannel(channel.id);
+    }
+  }
+
+  /** 停止单个通道（接入向导的"断开链接"）。未注册/已停止都是幂等目标态。 */
+  async stopChannel(channelId) {
+    if (!this.has(channelId)) return;      // get() 对未知 id 会抛，这里要幂等
+    const channel = this.get(channelId);
+    try {
+      await channel.stop();
+      channel.status = 'stopped';
+    } catch (error) {
+      channel.status = 'error';
+      this.#log(`[channels] 通道 ${channel.id} 停止失败: ${String(error?.message ?? error)}`);
     }
   }
 

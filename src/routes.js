@@ -44,6 +44,7 @@ import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
 import { resolveLaunchCommand, openApp, smartLaunch } from './channels/launch.js';
 import { listQQInstances, focusQQInstance } from './channels/qq/instances.js';
+import { CHANNEL_CATALOG, formValuesToChannelPatch } from './channels/catalog.js';
 import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
@@ -162,6 +163,47 @@ export function createRoutes(deps) {
           instances: instancesCache.data,
           bridgedAccount: bridged
         });
+      }
+    },
+    {
+      // 可建立链接的通道目录（驾驶舱 [+] 接入向导数据源）。标注每项当前是否已接入。
+      method: 'GET', pattern: '/api/channels/catalog',
+      handler: async ({ res, json }) => {
+        const slices = getConfig().channels ?? {};
+        return json(res, 200, {
+          catalog: CHANNEL_CATALOG.map((item) => ({
+            ...item,
+            enabled: Boolean(slices[item.id]?.enabled)
+          }))
+        });
+      }
+    },
+    {
+      // 接入向导的"建立链接"：合并表单 patch 到 config.channels.<id> 并按需启停
+      // 该通道（只动这一个，不重启别的——QQ 重启会抖掉桥接连线）。
+      // ⚠️ 仅本机控制台可触发，同 launch 的权限边界。
+      method: 'POST', pattern: /^\/api\/channels\/([\w-]+)\/enable$/,
+      handler: async ({ req, res, json, match }) => {
+        const channelId = match[1];
+        if (!CHANNEL_CATALOG.some((item) => item.id === channelId)) {
+          return json(res, 404, { error: `未知通道类型: ${channelId}` });
+        }
+        const body = await bodyOf(req);
+        const enabled = body?.enabled !== false;
+        const patch = formValuesToChannelPatch(body?.config ?? {});
+        updateConfig({ channels: { [channelId]: { ...patch, enabled } } });
+        try {
+          if (enabled) {
+            await channelManager.startChannel(channelId);
+          } else {
+            await channelManager.stopChannel(channelId);
+          }
+        } catch (error) {
+          return json(res, 500, { error: `通道启停失败：${error?.message ?? error}` });
+        }
+        const channel = channelManager.get(channelId);
+        log(`[channels] 通道 ${channelId} ${enabled ? '接入' : '断开'}（状态: ${channel?.status ?? '?'}）`);
+        return json(res, 200, { ok: true, enabled, status: channel?.status ?? null, lastError: channel?.lastError ?? null });
       }
     },
     {
