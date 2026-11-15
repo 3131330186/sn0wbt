@@ -44,6 +44,10 @@ $$('.tab').forEach((tab) => {
     loadSessions();
     loadMemoryView();
     initSessionScrollLoader();
+    // 默认首页 = 驾驶舱：switchTab 才会触发 loadDashboard 建骨架。
+    // 此前启动链从不调它 —— 首次打开内容区一直空着，要点一下页签才有内容。
+    // 守卫：启动链慢于人手时（用户已点进别的页签 / 测试已切页）不往回拽。
+    if (state.tab === 'dashboard') switchTab('dashboard');
   } catch (err) {
     // 启动链路任何一步抛错都必须摘掉加载遮罩 —— 否则整窗被
     // z-index:999 的 loading-overlay 盖住，用户只看到一片空白。

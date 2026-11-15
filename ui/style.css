@@ -2165,3 +2165,233 @@ span.rail-group:nth-of-type(5) { color: #ff5da2; }   /* 系统 粉 */
 .connect-hint { font-size: 11.5px; color: var(--tx3); line-height: 1.6; margin-top: 8px; }
 .connect-err { font-size: 12px; color: #ff5da2; margin-top: 8px; min-height: 1em; }
 .connect-foot { display: flex; gap: 10px; margin-top: 12px; }
+
+/* ══════════════════════════════════════════════════════════════
+   雪境 Frost v0.8.1 —— 全站重设计层（驾驶舱除外）
+   ══════════════════════════════════════════════════════════════
+   设计纲领：
+     · 冰蓝主色替换靛蓝：冷调蓝黑底 + 冰晶蓝，和 ❄ 品牌同源
+     · 形状语言换血：胶囊按钮 / 大圆角面板 / 顶缘冰棱高光
+     · 页头统一 ❄ 记号 + 大字距（CSS ::before 注入，不动 DOM）
+     · 对话气泡重做：用户侧冰蓝渐变胶囊，机器人侧磨砂面板
+     · 表格 / 表单 / 标签 / 滚动条全套随令牌换血
+   纪律：只动视觉，不改类名与 DOM（render/scroll 测试与骨架纪律不受影响）。
+*/
+
+/* ── 1. 令牌换血（concept2 靛蓝 → Frost 冰蓝）────────────────────── */
+:root,
+[data-theme='dark'] {
+  --bg0: #0a1018;
+  --bg1: #101a28;
+  --bg2: #16212f;
+  --bg3: #1e2c3e;
+  --bd: #1c2a3c;
+  --bd2: #28394f;
+  --tx: #dfe9f4;
+  --tx2: #93a6bd;
+  --tx3: #5f7188;
+  --ac: #56b0ff;
+  --ac-soft: rgba(86, 176, 255, .13);
+  --ac-line: rgba(86, 176, 255, .40);
+  --ok: #4fb58c;
+  --ok-line: rgba(79, 181, 140, .45);
+  --warn: #e0a95c;
+  --err: #ff7b8a;
+  --err-line: rgba(255, 123, 138, .45);
+  --r-sm: 10px;
+  --r-md: 16px;
+  --raise-1: 0 1px 3px rgba(2, 8, 18, .5);
+  --raise-3: 0 18px 50px rgba(2, 8, 18, .65);
+  --frost-line: linear-gradient(90deg, transparent, rgba(140, 200, 255, .55), transparent);
+}
+
+/* 底：夜空冰晕 */
+body {
+  background:
+    radial-gradient(1100px 500px at 12% -8%, rgba(86, 176, 255, .07), transparent 60%),
+    radial-gradient(900px 420px at 96% 108%, rgba(86, 176, 255, .05), transparent 60%),
+    var(--bg0);
+}
+
+::selection { background: rgba(86, 176, 255, .30); }
+
+/* 滚动条：细冰条 */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 175, 235, .22);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(120, 175, 235, .40); }
+
+/* ── 2. 页头：❄ 记号 + 大字距（驾驶舱页头除外）──────────────────── */
+#view h2:not(.dash-hello h2)::before {
+  content: '❄ ';
+  background: linear-gradient(180deg, #eaf6ff, #56b0ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-right: 2px;
+}
+#view h2:not(.dash-hello h2) {
+  letter-spacing: .04em;
+  background: linear-gradient(180deg, #f2f9ff, #a9cdf0);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+#view h3 {
+  letter-spacing: .03em;
+  padding-left: 10px;
+  position: relative;
+}
+#view h3::before {
+  content: '';
+  position: absolute; left: 0; top: 50%;
+  width: 3px; height: 60%;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(180deg, #9fd4ff, #56b0ff);
+}
+
+/* ── 3. 卡片：磨砂面板 + 顶缘冰棱 ───────────────────────────────── */
+.card, .scard, .prompt-preview-card, .health-card, .price-card,
+.channel-row, .connect-row, .setting-item, .skill-item, .plugin-item {
+  background: linear-gradient(180deg, rgba(146, 200, 255, .045), transparent 42%), var(--bg1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  position: relative;
+  overflow: hidden;
+}
+.card::before, .scard::before, .prompt-preview-card::before,
+.health-card::before, .price-card::before,
+.channel-row::before, .connect-row::before {
+  content: '';
+  position: absolute; top: 0; left: 8%; right: 8%; height: 1px;
+  background: var(--frost-line);
+  opacity: .55;
+  pointer-events: none;
+}
+.card:hover, .scard:hover { border-color: var(--bd2); }
+
+/* ── 4. 按钮：胶囊化 + 冰蓝渐变主键 ─────────────────────────────── */
+.btn {
+  border-radius: 999px;
+  padding: 7px 16px;
+  background: rgba(120, 175, 235, .07);
+  border: 1px solid var(--bd2);
+  font-weight: 500;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.btn:hover {
+  border-color: var(--ac-line);
+  background: rgba(120, 175, 235, .12);
+}
+.btn-primary, button.primary, .btn.primary {
+  background: linear-gradient(135deg, #56b0ff, #3f8fe0);
+  border-color: transparent;
+  color: #06121f;
+  font-weight: 600;
+  box-shadow: 0 2px 14px rgba(86, 176, 255, .28);
+}
+.btn-primary:hover, button.primary:hover, .btn.primary:hover {
+  background: linear-gradient(135deg, #6cbfff, #4c9cec);
+  box-shadow: 0 3px 18px rgba(86, 176, 255, .4);
+}
+.link-btn { color: var(--ac); }
+
+/* ── 5. 标签 / 徽标：冰晶胶囊 ───────────────────────────────────── */
+.tag {
+  border-radius: 999px;
+  background: rgba(120, 175, 235, .10);
+  border: 1px solid rgba(120, 175, 235, .22);
+  color: var(--tx2);
+  font-size: 11px;
+  padding: 2px 9px;
+}
+.tag.ok, .tag.good { background: rgba(79, 181, 140, .13); border-color: rgba(79, 181, 140, .3); color: #7fd4ae; }
+.tag.warn { background: rgba(224, 169, 92, .13); border-color: rgba(224, 169, 92, .3); color: #ecc584; }
+.tag.bad, .tag.err { background: rgba(255, 123, 138, .13); border-color: rgba(255, 123, 138, .3); color: #ff9aa5; }
+
+/* ── 6. 表单：冰面输入框 ────────────────────────────────────────── */
+input[type="text"], input[type="password"], input[type="number"],
+input[type="search"], input[type="email"], textarea, select {
+  background: rgba(10, 16, 24, .55);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  color: var(--tx);
+  transition: border-color .15s, box-shadow .15s;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--ac-line);
+  box-shadow: 0 0 0 3px rgba(86, 176, 255, .12);
+  outline: none;
+}
+
+/* ── 7. 表格：冰面网格 ──────────────────────────────────────────── */
+.usage-table th, .tbl th, .archive-table th {
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 10.5px;
+  color: var(--tx3);
+  border-bottom: 1px solid var(--bd2);
+}
+.usage-table td, .tbl td, .archive-table td {
+  border-bottom: 1px solid rgba(28, 42, 60, .6);
+  font-variant-numeric: tabular-nums;
+}
+.usage-table tbody tr:hover td, .tbl tbody tr:hover td, .archive-table tbody tr:hover td {
+  background: rgba(86, 176, 255, .05);
+}
+
+/* ── 8. 对话页：气泡与输入区重做 ────────────────────────────────── */
+.webchat-msgs .msg { display: flex; }
+.webchat-msgs .msg .bub {
+  max-width: min(72%, 560px);
+  padding: 9px 14px;
+  border-radius: 16px;
+  line-height: 1.55;
+}
+.webchat-msgs .msg.u { justify-content: flex-end; }
+.webchat-msgs .msg.u .bub {
+  background: linear-gradient(135deg, #56b0ff, #3f8fe0);
+  color: #06121f;
+  font-weight: 500;
+  border-bottom-right-radius: 5px;
+  box-shadow: 0 2px 12px rgba(86, 176, 255, .22);
+}
+.webchat-msgs .msg.a .bub {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--tx);
+  border-bottom-left-radius: 5px;
+}
+.webchat-composer input,
+.webchat-composer textarea {
+  border-radius: 999px;
+  padding: 10px 18px;
+}
+.webchat-composer .btn { border-radius: 999px; }
+
+/* ── 9. 模态：冰晶对话框 ────────────────────────────────────────── */
+.model-modal {
+  background: var(--bg1);
+  border: 1px solid var(--bd2);
+  border-radius: 18px;
+  box-shadow: var(--raise-3), 0 0 0 1px rgba(140, 200, 255, .06);
+}
+.model-modal-head { letter-spacing: .03em; }
+
+/* ── 10. 品牌标：Q 块 → ❄ 冰晶块（原 Q 是 QQ 时代残留）────────────── */
+.brand::before {
+  content: '❄\FE0E';
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #eaf6ff, #56b0ff 78%);
+  color: #0a1420;
+  font-size: 14px; font-weight: 700;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(86, 176, 255, .35);
+}

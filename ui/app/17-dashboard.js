@@ -187,7 +187,7 @@ function renderDashUsage(st) {
     <div class="u-cell"><div class="u-num">¥${cost.toFixed(2)}</div><div class="u-lb">今日成本</div></div>
     <div class="u-cell"><div class="u-num">${runs}</div><div class="u-lb">今日对话</div></div>
     <div class="u-cell"><div class="u-num">${tokens.toLocaleString()}</div><div class="u-lb">今日 tokens</div></div>
-    <div class="u-cell"><div class="u-num">${cache}%</div><div class="u-lb">缓存命中</div></div>
+    <div class="u-cell"><div class="u-num">${Math.round(cache)}%</div><div class="u-lb">缓存命中</div></div>
     <div class="u-cell"><div class="u-num">${searches}</div><div class="u-lb">网页搜索</div></div>`;
 }
 
