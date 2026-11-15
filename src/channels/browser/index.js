@@ -15,6 +15,7 @@
 //     通道自身（不是 client 上），manager.send 走"通道自身实现优先"路径
 //   · 操控类无入站事件流：不 dispatchInbound（网页通知类入站属后续路线）
 import { CAPABILITIES, ChannelError, CHANNEL_ERROR_CODES } from '../types.js';
+import { getConfig } from '../../config.js';
 
 export const BROWSER_CHANNEL_ID = 'browser';
 
@@ -60,7 +61,7 @@ export class BrowserChannel {
   }
 
   get cdp() { return this.#cdp; }
-  get enabled() { return this.#config?.enabled === true; }
+  get enabled() { return getConfig()?.channels?.browser?.enabled === true; }
 
   async start(ctx) {
     const { reportStatus } = ctx ?? {};

@@ -138,10 +138,12 @@ await c.check('stopChannel：只停目标通道；未注册 id 幂等返回', as
 // ── 3c. 接入向导目录与表单转换 ─────────────────────────────────────────
 const { CHANNEL_CATALOG, formValuesToChannelPatch, setByPath } = await import('../src/channels/catalog.js');
 
-await c.check('目录：browser/mail 可建立链接，QQ 不在目录（默认已接）', () => {
+await c.check('目录：qq/browser/mail 都可建立链接（接入向导统一语义）', () => {
   const ids = CHANNEL_CATALOG.map((item) => item.id);
   assert.ok(ids.includes('browser') && ids.includes('mail'));
-  assert.ok(!ids.includes('qq'), 'qq 是默认通道，不该出现在"可建立链接"目录');
+  // 2026-11-15 用户明确要求手动接入：qq 也走目录（默认 enabled=false，
+  // 登录 QQ 不会被自动桥接），三通道语义一致
+  assert.ok(ids.includes('qq'), 'qq 应出现在"可建立链接"目录');
   for (const item of CHANNEL_CATALOG) {
     assert.ok(item.label && item.desc && Array.isArray(item.form), `${item.id} 目录项不完整`);
     for (const f of item.form) assert.ok(f.path && f.label, `${item.id} 表单字段缺 path/label`);

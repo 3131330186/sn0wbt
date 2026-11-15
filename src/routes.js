@@ -13,9 +13,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from './config.js';
 import { getVoiceCallSession, recentVoiceTurns, resetVoiceCallSession, playCallTestTone } from './voice-call/runtime.js';
 import { listRenderEndpoints } from './voice-call/audio-devices.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { customSearch } from './web-search.js';
 import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate } from './llm.js';
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
@@ -75,6 +78,26 @@ export function createRoutes(deps) {
 
   // QQ 实例快照缓存（15s TTL）：探针要跑 Python UIA 枚举，不能每轮询都跑
   const instancesCache = { at: 0, data: [] };
+
+  /**
+   * 拉起/停止 UIA 桥接进程（QQ 通道 enable 的联动动作）。fire-and-forget：
+   * ps1 自己负责进程管理（互斥体/看门狗 hold），这里不等它。
+   * bridges/ 缺失（未装桥接环境）时如实降级，不报错。
+   */
+  function spawnBridgeProcess(script) {
+    const bridgeDir = path.resolve(__dirname, '..', 'bridges', 'qq-onebotv11-uia-bridge');
+    const ps1 = path.join(bridgeDir, 'scripts', script);
+    if (!fs.existsSync(ps1)) return '桥接环境未安装（bridges/ 缺失），跳过';
+    try {
+      const child = spawn('powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+        { cwd: bridgeDir, windowsHide: true, stdio: 'ignore' });
+      child.unref?.();
+      return script === 'start-bridge.ps1' ? '已拉起' : '已停止';
+    } catch (error) {
+      return `失败：${error?.message ?? error}`;
+    }
+  }
 
   // 小工具：读请求体（容错：没 body 当空对象）。
   // 但 readBody 明确标记的可暴露错误（400 非法 JSON / 413 过大）必须透传，
@@ -201,9 +224,15 @@ export function createRoutes(deps) {
         } catch (error) {
           return json(res, 500, { error: `通道启停失败：${error?.message ?? error}` });
         }
+        // QQ 通道的接入/断开联动桥接进程：接入 = 拉起桥接（它只等 WS 开闸，
+        // 不会自己碰 QQ）；断开 = 停桥接（彻底撒手，即使用户还登着 QQ）。
+        let bridgeNote = null;
+        if (channelId === 'qq') {
+          bridgeNote = enabled ? spawnBridgeProcess('start-bridge.ps1') : spawnBridgeProcess('stop-bridge.ps1');
+        }
         const channel = channelManager.get(channelId);
-        log(`[channels] 通道 ${channelId} ${enabled ? '接入' : '断开'}（状态: ${channel?.status ?? '?'}）`);
-        return json(res, 200, { ok: true, enabled, status: channel?.status ?? null, lastError: channel?.lastError ?? null });
+        log(`[channels] 通道 ${channelId} ${enabled ? '接入' : '断开'}（状态: ${channel?.status ?? '?'}${bridgeNote ? `，桥接: ${bridgeNote}` : ''}）`);
+        return json(res, 200, { ok: true, enabled, status: channel?.status ?? null, lastError: channel?.lastError ?? null, bridge: bridgeNote });
       }
     },
     {

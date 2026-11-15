@@ -76,11 +76,11 @@ function renderDashChannels(channels) {
     node.innerHTML = '<div class="dash-empty">没有已注册的通道。</div>';
     return;
   }
-  // QQ 特殊化：探测到已登录实例（可能多开）→ 每账号一张卡（点谁唤起谁）；
-  // 探针不可用/没有实例 → 落回通用通道卡（旧行为：点击新开）。
+  // QQ 特殊化：通道已接入且桥接在线时，探测到几个登录实例就每账号一张卡
+  // （点谁唤起谁）；未接入/探针不可用 → 落回通用通道卡（未接入态）。
   const parts = [];
   for (const ch of channels) {
-    if (ch.id === 'qq' && dashQQInstances.length) {
+    if (ch.id === 'qq' && ch.status === 'started' && ch.lastStatus?.connected && dashQQInstances.length) {
       parts.push(...dashQQInstances.map(renderDashQQAccountCard));
     } else {
       parts.push(renderDashChannelCard(ch));

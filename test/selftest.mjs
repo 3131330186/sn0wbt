@@ -294,7 +294,7 @@ refs:
     snowluma: { wsUrl: `ws://127.0.0.1:${PORTS.onebotWs}`, httpUrl: `http://127.0.0.1:${PORTS.onebotHttp}`, accessToken: '' },
     // 密闭性：本测试自建 config（不经 _harness），必须显式钉回 napcat 后端——
     // 否则 DEFAULT channels.qq.backend='uia' 会起反向服务端而非连本文件的 mock WS
-    channels: { qq: { backend: 'napcat' } },
+    channels: { qq: { backend: 'napcat', enabled: true } },
     persona: { botName: '审计Bot', participation: 'medium', roleText: '你是审计群里的机器人。' },
     allow: { groups: ['456'], private: ['777'] },
     deny: { groups: [], private: [] },

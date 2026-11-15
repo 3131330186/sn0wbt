@@ -500,6 +500,10 @@ export const DEFAULT_CONFIG = {
   // 结构化提示（不伪造成功）。用户显式 enabled 后才真正连接。
   channels: {
     qq: {
+      // 接入向导语义（2026-11-15 用户明确要求）：默认**未接入** —— 不开闸时
+      // 反向 WS 服务端不监听，桥接连不上、绝不触碰用户自己登录的 QQ。
+      // 在驾驶舱「添加链接」接入后才启动。与 browser/mail 的 enabled 同语义。
+      enabled: false,
       // QQ 通道后端（2026-11-15 风控事件后默认 UIA）：
       //   uia    = 反向 WS 服务端 + UIA 桥接（驱动正常登录的官方 QQ 客户端，风控暴露最小）
       //   napcat = NapCat 协议端（hook，实时完整事件流；小号已被风控，暂不推荐）

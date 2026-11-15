@@ -9,6 +9,14 @@
 // 表单之外的切片字段（pollSeconds/tls 等）保持 config 默认值即可，不强制收集。
 export const CHANNEL_CATALOG = [
   {
+    id: 'qq',
+    label: 'QQ',
+    icon: '💬',
+    desc: 'UIA 桥接驱动正常登录的官方 QQ 客户端（不注入不 Hook，风控暴露最小）。接入后只响应白名单会话。',
+    hint: '需要桥接环境（bridges/ venv，已装则自动）；接入 = 开闸让桥接驱动你登录的 QQ，断开 = 立即撒手',
+    form: []
+  },
+  {
     id: 'browser',
     label: '浏览器',
     icon: '🌐',

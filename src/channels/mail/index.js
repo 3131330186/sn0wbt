@@ -10,6 +10,7 @@
 //     接入 AI 自动回复管道属后续路线（需要 chatKey 语义设计，见 DESIGN.md）
 //   · 隐私：邮件正文不进日志，日志只记 UID/发件人域/结果
 import { CAPABILITIES, ChannelError, CHANNEL_ERROR_CODES } from '../types.js';
+import { getConfig } from '../../config.js';
 
 export const MAIL_CHANNEL_ID = 'mail';
 
@@ -108,7 +109,7 @@ export class MailChannel {
     this.#smtpFactory = smtpFactory ?? null;
   }
 
-  get enabled() { return this.#config?.enabled === true; }
+  get enabled() { return getConfig()?.channels?.mail?.enabled === true; }
 
   async start(ctx) {
     const { dispatchInbound, reportStatus } = ctx ?? {};
