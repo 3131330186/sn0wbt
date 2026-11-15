@@ -507,7 +507,10 @@ export const DEFAULT_CONFIG = {
       uiaWsPort: 11229,         // 核心监听 ws://127.0.0.1:11229/ws，桥接连入（对齐桥接示例配置）
       selfId: '',               // 小号 QQ 号（桥接 get_login_info 的兜底）
       // 驾驶舱卡片点击 = 启动器：留空走自动探测（QQNT 标准安装位 → qq:// 协议兜底）
-      launchCommand: ''
+      launchCommand: '',
+      // 实例探测探针的 Python（已登录优先/账号分卡）。留空用桥接 venv 的解释器；
+      // bridges/ 缺失时探针不可用 → 启动器落回直接 spawn
+      probePython: ''
     },
     browser: {
       // 浏览器需以远程调试模式启动后通道才能连上：

@@ -8,6 +8,8 @@
 let dashSkeletonBuilt = false;
 let dashTimer = null;          // 本页停留时的轮询（与通道页同款）
 let dashLastStatus = null;     // /api/status 缓存（SSE 会话更新时可复用）
+let dashQQInstances = [];      // 已登录 QQ 实例（账号分卡；探针不可用时为空 → 落回单卡）
+let dashBridgedAccount = '';   // 桥接正在驱动的账号昵称
 
 function dashTime(ts) {
   if (!ts) return '';
@@ -46,13 +48,45 @@ function renderDashChannelCard(ch) {
     </div>`;
 }
 
+/** QQ 账号卡：一个已登录实例一张卡（多开互不混淆）。点击 = 唤起该账号的窗口。 */
+function renderDashQQAccountCard(inst) {
+  const bridged = dashBridgedAccount && inst.account === dashBridgedAccount;
+  const light = bridged ? 'on' : (inst.minimized ? 'warn' : 'off');
+  const detail = bridged ? '桥接驱动中 · 点击唤起窗口'
+    : (inst.minimized ? '已最小化 · 点击唤起' : '未接桥接 · 点击唤起窗口');
+  return `
+    <div class="dash-card dash-card-acct" data-channel-id="qq" data-hwnd="${Number(inst.hwnd)}"
+         data-tab-jump="snowluma" style="--ch-color: var(--ch-qq)">
+      <div class="dash-card-head">
+        <span class="dash-ic-chip">👤</span>
+        <b>${esc(inst.account)}</b>
+        <span class="status-light ${light}"></span>
+        <span class="dash-manage" data-manage="snowluma" title="QQ 通道管理">⚙</span>
+      </div>
+      <div class="dash-card-body">${esc(detail)}</div>
+      <div class="dash-caps"><span class="tag">QQ 登录实例</span></div>
+      <div class="dash-launch-hint">点击唤起</div>
+    </div>`;
+}
+
 function renderDashChannels(channels) {
   const node = document.getElementById('dash-channels');
   if (!node) return;
-  node.innerHTML = (channels ?? []).length
-    ? (channels ?? []).map(renderDashChannelCard).join('')
-    : '<div class="dash-empty">没有已注册的通道。</div>';
-  // 卡片可点 → 跳通道页（事件委托一次绑定在容器上）
+  if (!(channels ?? []).length) {
+    node.innerHTML = '<div class="dash-empty">没有已注册的通道。</div>';
+    return;
+  }
+  // QQ 特殊化：探测到已登录实例（可能多开）→ 每账号一张卡（点谁唤起谁）；
+  // 探针不可用/没有实例 → 落回通用通道卡（旧行为：点击新开）。
+  const parts = [];
+  for (const ch of channels) {
+    if (ch.id === 'qq' && dashQQInstances.length) {
+      parts.push(...dashQQInstances.map(renderDashQQAccountCard));
+    } else {
+      parts.push(renderDashChannelCard(ch));
+    }
+  }
+  node.innerHTML = parts.join('');
 }
 
 function renderDashUsage(st) {
@@ -101,11 +135,17 @@ function renderDashHello(st) {
 
 async function refreshDashboard({ quiet = false } = {}) {
   try {
-    const [chRes, stRes, seRes] = await Promise.all([
+    const [chRes, stRes, seRes, inRes] = await Promise.all([
       api('/api/channels').catch(() => null),
       api('/api/status').catch(() => null),
-      api('/api/sessions?limit=8').catch(() => null)
+      api('/api/sessions?limit=8').catch(() => null),
+      // 实例快照有 15s 服务端缓存 + UIA 枚举成本，失败静默（落回通用卡）
+      api('/api/channels/qq/instances').catch(() => null)
     ]);
+    if (inRes) {
+      dashQQInstances = Array.isArray(inRes.instances) ? inRes.instances : [];
+      dashBridgedAccount = String(inRes.bridgedAccount ?? '');
+    }
     if (chRes) renderDashChannels(chRes.channels ?? []);
     if (stRes) {
       dashLastStatus = stRes;
@@ -139,21 +179,27 @@ function buildDashSkeleton() {
         <div class="dash-recent" id="dash-recent"></div>
       </div>
     </div>`;
-  // 通道卡点击 = 启动器：POST launch 拉起对应软件；⚙ 角标 = 跳管理页。
-  // 事件委托绑一次，数据节点轮询替换不丢绑定。
+  // 通道卡点击 = 启动器：POST launch 拉起对应软件（QQ 账号卡带 hwnd → 唤起指定窗口）；
+  // ⚙ 角标 = 跳管理页。事件委托绑一次，数据节点轮询替换不丢绑定。
   document.getElementById('dash-channels')?.addEventListener('click', async (e) => {
     const card = e.target.closest('.dash-card');
     if (!card) return;
     if (e.target.closest('.dash-manage')) { switchTab(card.dataset.tabJump ?? 'channels'); return; }
     const chId = card.dataset.channelId;
     if (!chId) return;
+    const hwnd = Number(card.dataset.hwnd) || 0;
     try {
-      await api(`/api/channels/${encodeURIComponent(chId)}/launch`, { method: 'POST' });
+      const result = await api(`/api/channels/${encodeURIComponent(chId)}/launch`, {
+        method: 'POST',
+        ...(hwnd ? { body: JSON.stringify({ hwnd }) } : {})
+      });
       const body = card.querySelector('.dash-card-body');
       if (body && !body.dataset.launchFlash) {
         body.dataset.launchFlash = '1';
         body.dataset.old = body.textContent;
-        body.textContent = '已启动 ✓';
+        body.textContent = result.action === 'focused'
+          ? `已唤起 ✓（${result.account ?? ''}）`
+          : '已启动 ✓';
         setTimeout(() => { body.textContent = body.dataset.old ?? ''; delete body.dataset.launchFlash; }, 1600);
       }
     } catch (error) {

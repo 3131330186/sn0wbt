@@ -42,7 +42,8 @@ import { synthesize as synthesizeSpeech, resolveSpeechEndpoint, readCloneRef, CL
 import { resolveAdapter, ADAPTERS, FORMAT_IDS, capabilitiesText } from './speech/adapters/index.js';
 import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
-import { resolveLaunchCommand, openApp } from './channels/launch.js';
+import { resolveLaunchCommand, openApp, smartLaunch } from './channels/launch.js';
+import { listQQInstances, focusQQInstance } from './channels/qq/instances.js';
 import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
@@ -70,6 +71,9 @@ export function createRoutes(deps) {
 
   // 网页对话的虚拟会话 key：web 不是合法 QQ 号（纯数字），永不与真实私聊撞名。
   const WEB_CHAT_KEY = 'private:web';
+
+  // QQ 实例快照缓存（15s TTL）：探针要跑 Python UIA 枚举，不能每轮询都跑
+  const instancesCache = { at: 0, data: [] };
 
   // 小工具：读请求体（容错：没 body 当空对象）。
   // 但 readBody 明确标记的可暴露错误（400 非法 JSON / 413 过大）必须透传，
@@ -112,20 +116,52 @@ export function createRoutes(deps) {
     },
     {
       // 驾驶舱卡片点击 = 启动器：拉起通道对应的软件。
-      // ⚠️ 仅本机控制台可触发（外部消息进不来这里）；这是"主人点按钮"，不是工具调用。
+      // QQ 走 smartLaunch：已登录实例优先唤起（不重复开号），无实例才新开；
+      // body.hwnd 可指定账号卡对应的窗口（多开时每张卡各指各的）。
+      // 其它通道直接启动。⚠️ 仅本机控制台可触发（外部消息进不来这里）。
       method: 'POST', pattern: /^\/api\/channels\/([\w-]+)\/launch$/,
-      handler: async ({ res, json, match }) => {
+      handler: async ({ req, res, json, match }) => {
         const channelId = match[1];
         if (!channelManager.has(channelId)) return json(res, 404, { error: `未知通道: ${channelId}` });
-        const resolved = resolveLaunchCommand(channelId, getConfig());
-        if (!resolved) return json(res, 400, { error: `通道 ${channelId} 未定义启动方式` });
+        if (!resolveLaunchCommand(channelId, getConfig())) {
+          return json(res, 400, { error: `通道 ${channelId} 未定义启动方式` });
+        }
         try {
-          const result = openApp(resolved);
-          log(`[channels] 通道 ${channelId} 启动：${result.via}`);
-          return json(res, 200, { launched: true, via: result.via, pid: result.pid ?? null });
+          const body = await bodyOf(req);
+          const qqChannel = channelManager.get('qq');
+          const result = await smartLaunch(channelId, getConfig(), {
+            listInstances: channelId === 'qq' ? listQQInstances : null,
+            focusWindow: channelId === 'qq' ? focusQQInstance : null,
+            bridgedAccount: qqChannel?.client?.selfNickname || '',
+            preferredHwnd: Number(body?.hwnd) || 0
+          });
+          if (!result) return json(res, 400, { error: `通道 ${channelId} 未定义启动方式` });
+          log(`[channels] 通道 ${channelId} 启动：${result.action === 'focused' ? `唤起已登录窗口（${result.account}）` : `新开 ${result.via}`}`);
+          return json(res, 200, {
+            launched: true, action: result.action,
+            account: result.account ?? null, hwnd: result.hwnd ?? null,
+            via: result.via ?? null, pid: result.pid ?? null
+          });
         } catch (error) {
           return json(res, 500, { error: `启动失败：${error?.message ?? error}` });
         }
+      }
+    },
+    {
+      // 已登录 QQ 实例快照（驾驶舱按账号分卡用）。账号名要读 UIA（Python 探针），
+      // 有成本 → 15s 缓存；探针不可用返回空列表（前端落回单张通道卡）。
+      method: 'GET', pattern: /^\/api\/channels\/qq\/instances$/,
+      handler: async ({ res, json }) => {
+        const now = Date.now();
+        if (!instancesCache.at || now - instancesCache.at > 15000) {
+          instancesCache.data = await listQQInstances(getConfig());
+          instancesCache.at = now;
+        }
+        const bridged = channelManager.get('qq')?.client?.selfNickname || '';
+        return json(res, 200, {
+          instances: instancesCache.data,
+          bridgedAccount: bridged
+        });
       }
     },
     {
