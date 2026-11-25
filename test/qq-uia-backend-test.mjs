@@ -54,7 +54,20 @@ function makeFakeBridge(port) {
 }
 
 // ── 公共设施：一个通道 + 一个管理器 + 一个假桥，全测试共享 ────────────────
+// 与真实接入向导相同：先启用 QQ，再启动测试用监听器。
+const { setRuntimeConfig } = await import('../src/config.js');
+setRuntimeConfig({ channels: { qq: { enabled: true } } });
 const manager = new ChannelManager({ log: () => {} });
+await c.check('未监听的桥接可关闭，重复关闭也能完成', async () => {
+  const idle = new QQChannel({ config: { backend: 'uia' } });
+  const timer = setTimeout(() => { throw new Error('关闭未监听的桥接超时'); }, 1000);
+  try {
+    await idle.stop();
+    await idle.stop();
+  } finally {
+    clearTimeout(timer);
+  }
+});
 const channel = new QQChannel({ config: { backend: 'uia', uiaWsPort: PORT, selfId: '3567956169' } });
 manager.register(channel);
 const inbound = [];

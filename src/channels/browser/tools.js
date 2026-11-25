@@ -4,7 +4,7 @@
 // 注入（返回当前 createApp 实例的通道管理器里的 browser 通道），工具执行时
 // 才取用，天然支持同进程多轮 createApp（测试/Electron 重启核心）。
 // 未启用/未连接一律结构化报错（转成模型可读的中文提示），绝不伪造成功。
-import { registerTool } from '../../tool-registry.js';
+import { registerConsoleTool } from '../../tool-registry.js';
 import { ChannelError, CHANNEL_ERROR_CODES } from '../types.js';
 
 function ok(data) {
@@ -28,7 +28,7 @@ export function registerBrowserTools({ getChannel }) {
     return channel;
   }
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_read',
     name: '读取网页',
     description: '读取浏览器当前活动标签页的内容（URL/标题/可见文本）。浏览器通道启用后可用。',
@@ -46,7 +46,7 @@ export function registerBrowserTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_navigate',
     name: '打开网页',
     description: '在浏览器活动标签页打开一个 URL，返回最终 URL 和页面标题（重定向后会跟踪到最终地址）。',
@@ -69,7 +69,7 @@ export function registerBrowserTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_click',
     name: '点击网页元素',
     description: '点击页面上匹配 CSS 选择器的元素。选择器不确定时先用 browser_read 看内容，必要时用 browser_eval 查询。',
@@ -91,7 +91,7 @@ export function registerBrowserTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_fill',
     name: '填写输入框',
     description: '向页面输入框填充文本（先清空原内容再填）。适合表单、搜索框。',
@@ -117,7 +117,7 @@ export function registerBrowserTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_eval',
     name: '执行页面脚本',
     description: '在当前页面上下文执行一段 JavaScript 并返回 JSON 结果。用于 read/read 不到的结构化数据提取（表格、列表）。只读用途优先；会改页面状态的脚本慎用。',
@@ -139,7 +139,7 @@ export function registerBrowserTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('browser', {
     id: 'browser_tabs',
     name: '列出标签页',
     description: '列出浏览器当前打开的所有标签页（标题+URL），用于确认活动页或找目标页。',

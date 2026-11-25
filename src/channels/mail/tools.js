@@ -1,6 +1,6 @@
 // ── mail 通道工具集：发邮件 / 查收件暴露给 LLM ──────────────────────────
 // 与 browser/tools.js 同款模式：getChannel 由 app.js 闭包注入，执行时取用。
-import { registerTool } from '../../tool-registry.js';
+import { registerConsoleTool } from '../../tool-registry.js';
 import { ChannelError } from '../types.js';
 
 function ok(data) {
@@ -17,7 +17,7 @@ export function registerMailTools({ getChannel }) {
     return channel;
   }
 
-  registerTool({
+  registerConsoleTool('mail', {
     id: 'mail_send',
     name: '发送邮件',
     description: '通过 SMTP 发送一封纯文本邮件。收件人必须是完整邮箱地址。发送失败会明确报错。',
@@ -45,7 +45,7 @@ export function registerMailTools({ getChannel }) {
     }
   });
 
-  registerTool({
+  registerConsoleTool('mail', {
     id: 'mail_check',
     name: '检查新邮件',
     description: '立即检查一次邮箱有没有新邮件，返回新邮件数量与连接状态。邮件通道启用后可用。',

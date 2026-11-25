@@ -111,11 +111,11 @@ console.log('\n=== 隐私保护 ===');
   // 扫描函数真的要能工作：造一个含用户名的文件，必须被抓出来
   const os = await import('node:os');
   const tmpScan = fs.mkdtempSync(path.join(os.tmpdir(), 'privscan-'));
-  const me = os.userInfo().username;
+  const me = 'fixture-qq-user';
   fs.mkdirSync(path.join(tmpScan, 'sub'), { recursive: true });
   fs.writeFileSync(path.join(tmpScan, 'clean.bin'), Buffer.from('nothing to see here'));
   fs.writeFileSync(path.join(tmpScan, 'sub', 'leak.json'), JSON.stringify({ path: `C:\\Users\\${me}\\Desktop\\x` }));
-  const r = scanForPrivateData(tmpScan);
+  const r = scanForPrivateData(tmpScan, { identity: identityNeedles({ USERNAME: me }) });
   check(r.identity.some((h) => h.file.includes('leak.json')),
     `能扫出含用户名的文件（用户名 "${me}"）`);
   check(!r.identity.some((h) => h.file === 'clean.bin'), '干净文件不会误报');

@@ -19,7 +19,7 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const css = read('ui/style.css');
 const html = read('ui/index.html');
-// M9 拆分：静态扫描面向全部 12 段拼接后的完整代码（与浏览器实际执行的集合一致）
+// 按入口页面脚本顺序做静态扫描。
 const appJs = (await import('./_ui-load.mjs')).loadUiAppCode().code;
 
 // ── 1. 样式表结构 ────────────────────────────────────────────────────────
@@ -62,11 +62,20 @@ await c.check('「？」主题（已移除的彩蛋主题）基础 token 块不�
   assert.equal(banners, 0, `「？」主题 v3 的注释横幅应已移除，但仍出现 ${banners} 次`);
 });
 
-await c.check('没有任何选择器被重复定义且属性值冲突', () => {
+await c.check('每个视觉层内没有重复定义且取值冲突的选择器属性', () => {
+  // 样式表在基础层之后依次覆盖导航、驾驶舱细节、Frost 主题。
+  const lines = css.split('\n');
+  const sections = ['concept3 · sn0wbot 视觉层', '多巴胺细节', '雪境 Frost v0.8.1'].map(title => {
+    const index = lines.findIndex(line => line.includes(title));
+    assert.ok(index >= 0, `找不到样式分区 ${title}`);
+    return index + 1;
+  });
   const bySel = new Map();
   for (const r of rules) {
-    const key = r.sel.replace(/\s+/g, ' ').trim();
-    if (!key || key.startsWith('@')) continue;
+    const selector = r.sel.replace(/\s+/g, ' ').trim();
+    if (!selector || selector.startsWith('@')) continue;
+    const layer = sections.filter(line => r.start >= line).length;
+    const key = `${layer} ${selector}`;
     if (!bySel.has(key)) bySel.set(key, []);
     bySel.get(key).push(r);
   }
@@ -139,7 +148,7 @@ function localRefs(src) {
 
 await c.check('index.html 的本地资源引用全部存在', () => {
   for (const u of localRefs(html)) {
-    const p = path.join(ROOT, 'ui', u.replace(/^\//, ''));
+    const p = path.join(ROOT, 'ui', new URL(u, 'http://localhost/').pathname);
     assert.ok(fs.existsSync(p), `index.html 引用了不存在的资源：${u}`);
   }
 });
@@ -250,7 +259,12 @@ await c.check('app.js 里 $(\'#id\') / getElementById 引用的 id 都能被创�
   const refs = new Set();
   for (const m of appJs.matchAll(/\$\('#([\w-]+)'\)/g)) refs.add(m[1]);
   for (const m of appJs.matchAll(/getElementById\('([\w-]+)'\)/g)) refs.add(m[1]);
-  const missing = [...refs].filter((id) => !declared.has(id) && !DYNAMIC_IDS.has(id));
+  // 社区服务关闭时，顶栏有意省略了这些可选入口；启用时仍要求它们存在。
+  const communityOff = /const FORK_COMMUNITY_ENABLED = false;/.test(appJs);
+  const communityButtons = new Set(['quote-btn', 'quote-confirm-btn', 'feedback-btn', 'open-site-btn',
+    'skill-market-btn', 'plugin-market-btn', 'persona-plaza-btn']);
+  const missing = [...refs].filter(id => !declared.has(id) && !DYNAMIC_IDS.has(id)
+    && !(communityOff && communityButtons.has(id)));
   assert.equal(missing.length, 0, `这些 id 被引用但从未创建：${missing.join(', ')}`);
 });
 

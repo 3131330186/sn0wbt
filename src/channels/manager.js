@@ -17,6 +17,7 @@ import { MailChannel } from './mail/index.js';
 
 export class ChannelManager {
   #channels = new Map();       // id → channel
+  #transitions = new Map();     // 同一通道按请求顺序启停。
   #inboundListeners = new Set();
   #statusListeners = new Set();
   #log = null;
@@ -52,6 +53,7 @@ export class ChannelManager {
       label: channel.label,
       capabilities: [...channel.capabilities],
       status: channel.status || 'stopped',
+      lastError: channel.lastError ?? null,
       lastStatus: channel.lastStatus ?? null
     }));
   }
@@ -76,18 +78,31 @@ export class ChannelManager {
   }
 
   /** 启动单个通道（接入向导用：enable 后只拉起这一个，不惊动其他通道/桥接连线）。 */
-  async startChannel(channelId, ctx = {}) {
+  startChannel(channelId, ctx = {}) {
+    return this.#transition(channelId, () => this.#start(channelId, ctx));
+  }
+
+  async #transition(id, operation) {
+    const pending = (this.#transitions.get(id) ?? Promise.resolve()).catch(() => {}).then(operation);
+    this.#transitions.set(id, pending);
+    try { return await pending; }
+    finally { if (this.#transitions.get(id) === pending) this.#transitions.delete(id); }
+  }
+
+  async #start(channelId, ctx) {
     const channel = this.get(channelId);
     if (!channel) throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, `通道 ${channelId} 未注册`);
     channel.status = 'starting';
+    channel.lastError = null;
+    channel.lastStatus = null;
     try {
       await channel.start({
         dispatchInbound: (record) => this.#dispatch(channel.id, record),
         reportStatus: (status) => this.#report(channel.id, status),
         ...ctx
       });
-      channel.status = 'started';
-      this.#log(`[channels] 通道 ${channel.id} 已启动`);
+      if (channel.status === 'starting') channel.status = 'started';
+      this.#log(`[channels] 通道 ${channel.id} 状态：${channel.status}`);
     } catch (error) {
       channel.status = 'error';
       channel.lastError = String(error?.message ?? error);
@@ -103,15 +118,22 @@ export class ChannelManager {
   }
 
   /** 停止单个通道（接入向导的"断开链接"）。未注册/已停止都是幂等目标态。 */
-  async stopChannel(channelId) {
+  stopChannel(channelId) {
+    return this.#transition(channelId, () => this.#stop(channelId));
+  }
+
+  async #stop(channelId) {
     if (!this.has(channelId)) return;      // get() 对未知 id 会抛，这里要幂等
     const channel = this.get(channelId);
     try {
       await channel.stop();
       channel.status = 'stopped';
+      channel.lastError = null;
+      this.#report(channel.id, { connected: false });
     } catch (error) {
       channel.status = 'error';
-      this.#log(`[channels] 通道 ${channel.id} 停止失败: ${String(error?.message ?? error)}`);
+      channel.lastError = String(error?.message ?? error);
+      this.#log(`[channels] 通道 ${channel.id} 停止失败: ${channel.lastError}`);
     }
   }
 

@@ -18,6 +18,15 @@ const { ChannelError, CHANNEL_ERROR_CODES, CAPABILITIES } = await import('../src
 const { ChannelManager } = await import('../src/channels/manager.js');
 const { registerMailTools } = await import('../src/channels/mail/tools.js');
 
+const { setRuntimeConfig } = await import('../src/config.js');
+function makeChannel(options) {
+  setRuntimeConfig({ channels: { mail: options.config } });
+  return new MailChannel(options);
+}
+const localToolContext = {
+  chatKey: 'private:web', localConsole: true, consoleApprovals: { request: async () => true }
+};
+
 const c = createChecker('mail 通道（IMAP/SMTP · 可注入客户端）');
 
 /** 假 IMAP：记录调用，按脚本吐新邮件。 */
@@ -58,7 +67,7 @@ function mailConfig(overrides = {}) {
 // ── 1. 未启用 ───────────────────────────────────────────────────────────
 await c.check('enabled=false：start 不连接，状态 stopped 且上报原因', async () => {
   let factoryCalls = 0;
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: { enabled: false },
     imapFactory: async () => { factoryCalls += 1; return makeFakeImap(); }
   });
@@ -79,7 +88,7 @@ await c.check('start 连接 IMAP → 基线 UID；poll 拉新邮件 → 入站 r
       { uid: 44, from: 'bob@example.com', fromName: '', subject: '报表', text: '第二封' }
     ]
   });
-  const channel = new MailChannel({ config: mailConfig(), imapFactory: async () => imap });
+  const channel = makeChannel({ config: mailConfig(), imapFactory: async () => imap });
   const reports = [];
   const inbound = [];
   await channel.start({
@@ -116,7 +125,7 @@ await c.check('allowedFrom：命中发件人 → verified 入站；未命中 →
       { uid: 2, from: 'stranger@evil.com', fromName: '陌生人', subject: 'b', text: 'b' }
     ]
   });
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: mailConfig({ allowedFrom: ['^owner@example\\.com$'] }),
     imapFactory: async () => imap
   });
@@ -136,7 +145,7 @@ await c.check('allowedFrom：命中发件人 → verified 入站；未命中 →
 await c.check('sendText → 假 SMTP 收到参数；manager.send 路由到通道自身实现', async () => {
   const smtp = makeFakeSmtp();
   const imap = makeFakeImap({ highestUid: 5 });
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: mailConfig(),
     imapFactory: async () => imap,
     smtpFactory: async () => smtp
@@ -157,7 +166,7 @@ await c.check('sendText → 假 SMTP 收到参数；manager.send 路由到通道
 });
 
 await c.check('SMTP 未配置 host → CHANNEL_OFFLINE；工具层转结构化错误', async () => {
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: mailConfig({ smtp: { host: '', port: 465, tls: true, user: '', pass: '' } }),
     imapFactory: async () => makeFakeImap({ highestUid: 0 })
   });
@@ -171,7 +180,7 @@ await c.check('SMTP 未配置 host → CHANNEL_OFFLINE；工具层转结构化�
 await c.check('registerMailTools：mail_send 全链 + mail_check；注册 2 个工具', async () => {
   const smtp = makeFakeSmtp();
   const imap = makeFakeImap({ highestUid: 9, unseen: [{ uid: 10, from: 'a@b.com', fromName: '', subject: 's', text: 't' }] });
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: mailConfig(),
     imapFactory: async () => imap,
     smtpFactory: async () => smtp
@@ -184,18 +193,18 @@ await c.check('registerMailTools：mail_send 全链 + mail_check；注册 2 个�
   const checkDef = listTools().find((tool) => tool.id === 'mail_check');
   assert.ok(sendDef && checkDef);
 
-  const sendResult = await sendDef.execute({}, { to: 'x@y.com', subject: 'test', text: 'body' });
+  const sendResult = await sendDef.execute(localToolContext, { to: 'x@y.com', subject: 'test', text: 'body' });
   assert.equal(sendResult.isError, false);
   assert.equal(smtp.sent.length, 1);
 
-  const checkResult = await checkDef.execute({}, {});
+  const checkResult = await checkDef.execute(localToolContext, {});
   assert.equal(checkResult.isError, false);
   assert.ok(JSON.parse(checkResult.content).newMessages >= 1);
 });
 
 await c.check('stop：定时器清理 + 连接关闭 + 状态 stopped', async () => {
   const imap = makeFakeImap({ highestUid: 0 });
-  const channel = new MailChannel({
+  const channel = makeChannel({
     config: mailConfig({ pollSeconds: 1 }),
     imapFactory: async () => imap
   });

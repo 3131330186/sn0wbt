@@ -97,11 +97,12 @@ export class MailChannel {
   #smtpFactory = null;
   #imap = null;
   #smtp = null;
+  #generation = 0;
   #timer = null;
   #dispatch = null;
   #report = null;
   #lastUid = 0;
-  #polling = false;
+  #polling = null;
 
   constructor({ config, imapFactory, smtpFactory } = {}) {
     this.#config = config ?? {};
@@ -112,6 +113,9 @@ export class MailChannel {
   get enabled() { return getConfig()?.channels?.mail?.enabled === true; }
 
   async start(ctx) {
+    await this.stop();
+    this.#config = getConfig()?.channels?.mail ?? this.#config;
+    this.lastError = null;
     const { dispatchInbound, reportStatus } = ctx ?? {};
     this.#dispatch = dispatchInbound ?? (() => {});
     this.#report = reportStatus ?? (() => {});
@@ -130,6 +134,7 @@ export class MailChannel {
       this.#startPolling();
       return this.#imap;
     } catch (error) {
+      await this.stop();
       this.status = 'error';
       this.lastError = String(error?.message ?? error);
       this.#report({ connected: false, error: this.lastError });
@@ -139,12 +144,15 @@ export class MailChannel {
   }
 
   async stop() {
+    this.#generation++;
     if (this.#timer) { clearInterval(this.#timer); this.#timer = null; }
-    try { await this.#imap?.close?.(); } catch { /* ignore */ }
-    try { await this.#smtp?.close?.(); } catch { /* ignore */ }
+    const imap = this.#imap;
+    const smtp = this.#smtp;
     this.#imap = null;
     this.#smtp = null;
     this.status = 'stopped';
+    try { await imap?.close?.(); } catch { /* ignore */ }
+    try { await smtp?.close?.(); } catch { /* ignore */ }
   }
 
   /** 基线 UID：连上后先摸清"现在的最后位置"，历史邮件不重放。 */
@@ -165,10 +173,12 @@ export class MailChannel {
 
   /** 轮询一次新邮件（可由工具手动触发）。返回本次入站的条数。 */
   async poll() {
-    if (!this.#imap || this.#polling) return 0;
-    this.#polling = true;
+    if (!this.#imap || this.#polling === this.#imap) return 0;
+    const imap = this.#imap;
+    this.#polling = imap;
     try {
-      const messages = await this.#imap.getUnseen(this.#lastUid);
+      const messages = await imap.getUnseen(this.#lastUid);
+      if (imap !== this.#imap) return 0;
       let count = 0;
       for (const message of messages ?? []) {
         if (Number(message.uid) > this.#lastUid) this.#lastUid = Number(message.uid);
@@ -180,10 +190,10 @@ export class MailChannel {
       if (count) this.#report({ connected: true, detail: `新邮件 ${count} 封` });
       return count;
     } catch (error) {
-      this.#report({ connected: false, error: String(error?.message ?? error) });
+      if (imap === this.#imap) this.#report({ connected: false, error: String(error?.message ?? error) });
       return 0;
     } finally {
-      this.#polling = false;
+      if (this.#polling === imap) this.#polling = null;
     }
   }
 
@@ -227,7 +237,15 @@ export class MailChannel {
     if (!this.#config?.smtp?.host) {
       throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, 'SMTP 未配置（channels.mail.smtp.host 为空）');
     }
-    this.#smtp = await (this.#smtpFactory ?? defaultSmtpFactory)(this.#config);
+    const config = this.#config;
+    const generation = this.#generation;
+    const smtp = await (this.#smtpFactory ?? defaultSmtpFactory)(config);
+    if (!this.enabled || generation !== this.#generation || config !== this.#config) {
+      await smtp.close?.();
+      throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, '邮件通道配置已变更，请重试');
+    }
+    if (this.#smtp) await smtp.close?.();
+    else this.#smtp = smtp;
     return this.#smtp;
   }
 
@@ -236,6 +254,7 @@ export class MailChannel {
    * @returns {{sent: true, messageId: string}} 失败抛错（结构化，调用方转 err）
    */
   async sendText(target, text, opts = {}) {
+    if (!this.enabled) throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, '邮件通道未启用');
     if (!target) throw new ChannelError(CHANNEL_ERROR_CODES.CAPABILITY_MISSING, '缺少收件人地址');
     const smtp = await this.#requireSmtp();
     const result = await smtp.send({

@@ -271,6 +271,8 @@ await c.check('QQChannel：autoConnect=false 时 start 不发起连接，事件�
   m.register(new QQChannel({ config: { backend: 'napcat', wsUrl: 'ws://127.0.0.1:39999' } }));
   const seen = [];
   m.onInbound((record) => seen.push(record));
+  const { setRuntimeConfig } = await import('../src/config.js');
+  setRuntimeConfig({ channels: { qq: { enabled: true } } });
   await m.startAll({ autoConnect: false });   // 不连真实/不存在端口，纯密闭
   const qq = m.get('qq');
   assert.equal(qq.status, 'started');

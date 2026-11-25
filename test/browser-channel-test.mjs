@@ -16,6 +16,15 @@ const { ChannelError, CHANNEL_ERROR_CODES, CAPABILITIES } = await import('../src
 const { ChannelManager } = await import('../src/channels/manager.js');
 const { registerBrowserTools } = await import('../src/channels/browser/tools.js');
 
+const { setRuntimeConfig } = await import('../src/config.js');
+function makeChannel(options) {
+  setRuntimeConfig({ channels: { browser: options.config } });
+  return new BrowserChannel(options);
+}
+const localToolContext = {
+  chatKey: 'private:web', localConsole: true, consoleApprovals: { request: async () => true }
+};
+
 const c = createChecker('browser 通道（CDP · 可注入连接）');
 
 /** 假 CDP + 假页面：覆盖 BrowserChannel 用到的全部接口面。 */
@@ -42,7 +51,7 @@ function makeFakeCdp() {
 // ── 1. 未启用 ───────────────────────────────────────────────────────────
 await c.check('enabled=false：start 不发起连接，状态 stopped 且上报原因', async () => {
   let connectCalls = 0;
-  const channel = new BrowserChannel({
+  const channel = makeChannel({
     config: { enabled: false },
     connectFn: async () => { connectCalls += 1; return {}; }
   });
@@ -57,7 +66,7 @@ await c.check('enabled=false：start 不发起连接，状态 stopped 且上报�
 // ── 2. 注入假 CDP 全链 ──────────────────────────────────────────────────
 await c.check('start 连接成功 → started；navigate/readPage/click/fill/evaluate/tabs/screenshot 全链可用', async () => {
   const fake = makeFakeCdp();
-  const channel = new BrowserChannel({
+  const channel = makeChannel({
     config: { enabled: true, cdpUrl: 'http://127.0.0.1:9222', readLimit: 100 },
     connectFn: async () => fake.cdp
   });
@@ -90,7 +99,7 @@ await c.check('start 连接成功 → started；navigate/readPage/click/fill/eva
 
 // ── 3. 未连接时操控 ─────────────────────────────────────────────────────
 await c.check('未连接操控 → ChannelError(CHANNEL_OFFLINE)，启用与否提示不同', async () => {
-  const disabled = new BrowserChannel({ config: { enabled: false } });
+  const disabled = makeChannel({ config: { enabled: false } });
   await disabled.start({});
   await assert.rejects(() => disabled.readPage(), (error) => (
     error instanceof ChannelError
@@ -98,7 +107,7 @@ await c.check('未连接操控 → ChannelError(CHANNEL_OFFLINE)，启用与否�
     && error.message.includes('未启用')
   ));
 
-  const enabledButOffline = new BrowserChannel({
+  const enabledButOffline = makeChannel({
     config: { enabled: true },
     connectFn: async () => { throw new Error('ECONNREFUSED'); }
   });
@@ -112,7 +121,7 @@ await c.check('未连接操控 → ChannelError(CHANNEL_OFFLINE)，启用与否�
 // ── 4. 工具集 ───────────────────────────────────────────────────────────
 await c.check('registerBrowserTools：注册 6 个工具，browser_read 正常返回内容', async () => {
   const fake = makeFakeCdp();
-  const channel = new BrowserChannel({
+  const channel = makeChannel({
     config: { enabled: true, cdpUrl: 'http://127.0.0.1:9222' },
     connectFn: async () => fake.cdp
   });
@@ -123,18 +132,18 @@ await c.check('registerBrowserTools：注册 6 个工具，browser_read 正常�
   const { listTools } = await import('../src/tool-registry.js');
   const def = listTools().find((tool) => tool.id === 'browser_read');
   assert.ok(def, 'browser_read 应已注册');
-  const result = await def.execute({}, {});
+  const result = await def.execute(localToolContext, {});
   assert.equal(result.isError, false);
   assert.ok(result.content.includes('页面正文内容'));
 });
 
 await c.check('工具层：未启用时 browser_navigate 返回结构化错误（不伪造成功）', async () => {
-  const channel = new BrowserChannel({ config: { enabled: false } });
+  const channel = makeChannel({ config: { enabled: false } });
   await channel.start({});
   registerBrowserTools({ getChannel: () => channel });
   const { listTools } = await import('../src/tool-registry.js');
   const def = listTools().find((tool) => tool.id === 'browser_navigate');
-  const result = await def.execute({}, { url: 'https://example.com' });
+  const result = await def.execute(localToolContext, { url: 'https://example.com' });
   assert.equal(result.isError, true);
   assert.ok(result.content.includes('未启用'));
 });
@@ -143,7 +152,7 @@ await c.check('工具层：未启用时 browser_navigate 返回结构化错误�
 await c.check('manager 集成：browser 通道注册 → startAll → send 路由到通道自身方法', async () => {
   const fake = makeFakeCdp();
   const manager = new ChannelManager({ log: () => {} });
-  manager.register(new BrowserChannel({
+  manager.register(makeChannel({
     config: { enabled: true },
     connectFn: async () => fake.cdp
   }));

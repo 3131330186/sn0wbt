@@ -6,6 +6,7 @@
 //   2. .venv 缺失 → python -m venv + pip install -r requirements.txt
 //   3. bridge-config.json 缺失 → 从 example 复制（账号信息用户自己填/走控制台接入）
 // 网络仅在 pip 阶段需要（venv 建好即离线）；git clone 已不需要 —— vendor 入库。
+import { installBridgeFiles } from './lib/bridge-files.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,26 +24,8 @@ function run(cmd, args, { cwd = ROOT } = {}) {
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} 退出码 ${r.status}`);
 }
 
-// 1) 复制补丁桥接（venv/logs/config 用户态内容不覆盖）
-if (!fs.existsSync(path.join(VENDOR, 'scripts', 'onebot_uia_bridge.py'))) {
-  say(`vendor 缺失：${VENDOR}`);
-  process.exit(1);
-}
-fs.mkdirSync(TARGET, { recursive: true });
-for (const name of ['LICENSE', 'README.md', 'requirements.txt']) {
-  fs.copyFileSync(path.join(VENDOR, name), path.join(TARGET, name));
-}
-fs.rmSync(path.join(TARGET, 'scripts'), { recursive: true, force: true });
-fs.cpSync(path.join(VENDOR, 'scripts'), path.join(TARGET, 'scripts'), { recursive: true });
+installBridgeFiles(VENDOR, TARGET);
 say('桥接脚本已就位（含全部修复补丁）');
-
-if (!fs.existsSync(path.join(TARGET, 'scripts', 'bridge-config.json'))) {
-  fs.copyFileSync(
-    path.join(TARGET, 'scripts', 'bridge-config.example.json'),
-    path.join(TARGET, 'scripts', 'bridge-config.json'),
-  );
-  say('bridge-config.json 已从示例创建（接入信息可在控制台/文件里改）');
-}
 
 // 2) venv + 依赖
 const venvPython = path.join(TARGET, '.venv', 'Scripts', 'python.exe');

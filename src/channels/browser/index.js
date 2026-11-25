@@ -64,6 +64,9 @@ export class BrowserChannel {
   get enabled() { return getConfig()?.channels?.browser?.enabled === true; }
 
   async start(ctx) {
+    await this.stop();
+    this.#config = getConfig()?.channels?.browser ?? this.#config;
+    this.lastError = null;
     const { reportStatus } = ctx ?? {};
     if (!this.enabled) {
       this.status = 'stopped';

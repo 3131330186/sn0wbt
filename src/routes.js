@@ -45,10 +45,11 @@ import { synthesize as synthesizeSpeech, resolveSpeechEndpoint, readCloneRef, CL
 import { resolveAdapter, ADAPTERS, FORMAT_IDS, capabilitiesText } from './speech/adapters/index.js';
 import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
+import { isLocalConsoleRequest } from './console-access.js';
 import { resolveLaunchCommand, openApp, smartLaunch } from './channels/launch.js';
 import { listQQInstances, focusQQInstance } from './channels/qq/instances.js';
 import { spawnBridgeProcess } from './channels/qq/bridge-process.js';
-import { CHANNEL_CATALOG, formValuesToChannelPatch } from './channels/catalog.js';
+import { CHANNEL_CATALOG, channelFormValue, formValuesToChannelPatch } from './channels/catalog.js';
 import { getGlobalBlocklist, updateGlobalBlocklist } from './community.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
@@ -78,6 +79,7 @@ export function createRoutes(deps) {
   const WEB_CHAT_KEY = 'private:web';
 
   // QQ 实例快照缓存（15s TTL）：探针要跑 Python UIA 枚举，不能每轮询都跑
+  const changingChannels = new Set();
   const instancesCache = { at: 0, data: [] };
 
   // 小工具：读请求体（容错：没 body 当空对象）。
@@ -177,6 +179,7 @@ export function createRoutes(deps) {
         return json(res, 200, {
           catalog: CHANNEL_CATALOG.map((item) => ({
             ...item,
+            form: item.form.map(field => ({ ...field, value: channelFormValue(field, slices[item.id]) })),
             enabled: Boolean(slices[item.id]?.enabled)
           }))
         });
@@ -195,8 +198,10 @@ export function createRoutes(deps) {
         const body = await bodyOf(req);
         const enabled = body?.enabled !== false;
         const patch = formValuesToChannelPatch(body?.config ?? {});
-        updateConfig({ channels: { [channelId]: { ...patch, enabled } } });
+        if (changingChannels.has(channelId)) return json(res, 409, { error: '通道正在切换，请稍后重试' });
+        changingChannels.add(channelId);
         try {
+          updateConfig({ channels: { [channelId]: { ...patch, enabled } } });
           if (enabled) {
             await channelManager.startChannel(channelId);
           } else {
@@ -204,14 +209,19 @@ export function createRoutes(deps) {
           }
         } catch (error) {
           return json(res, 500, { error: `通道启停失败：${error?.message ?? error}` });
+        } finally {
+          changingChannels.delete(channelId);
+        }
+        const channel = channelManager.get(channelId);
+        if (channel.status === 'error') {
+          return json(res, 502, { ok: false, enabled, status: 'error', error: channel.lastError || '通道连接失败' });
         }
         // QQ 通道的接入/断开联动桥接进程：接入 = 拉起桥接（它只等 WS 开闸，
         // 不会自己碰 QQ）；断开 = 停桥接（彻底撒手，即使用户还登着 QQ）。
         let bridgeNote = null;
-        if (channelId === 'qq') {
+        if (channelId === 'qq' && channel.backend === 'uia') {
           bridgeNote = enabled ? spawnBridgeProcess('start-bridge.ps1') : spawnBridgeProcess('stop-bridge.ps1');
         }
-        const channel = channelManager.get(channelId);
         log(`[channels] 通道 ${channelId} ${enabled ? '接入' : '断开'}（状态: ${channel?.status ?? '?'}${bridgeNote ? `，桥接: ${bridgeNote}` : ''}）`);
         return json(res, 200, { ok: true, enabled, status: channel?.status ?? null, lastError: channel?.lastError ?? null, bridge: bridgeNote });
       }
@@ -1376,6 +1386,7 @@ export function createRoutes(deps) {
         const entry = store.appendIncoming(WEB_CHAT_KEY, {
           mid: null,
           ts: Date.now(),
+          localConsole: isLocalConsoleRequest(req),
           senderId: 'web',
           senderName: String(getConfig().webChat?.senderName || '网页用户'),
           text
@@ -1392,8 +1403,19 @@ export function createRoutes(deps) {
       }
     },
     {
+      method: 'POST', pattern: '/api/webchat/approval',
+      handler: async ({ req, res, json }) => {
+        if (!isLocalConsoleRequest(req)) return json(res, 403, { error: '请在本机控制台确认操作' });
+        const { id, allow } = await readBody(req);
+        if (typeof id !== 'string' || typeof allow !== 'boolean') return json(res, 400, { error: '确认参数无效' });
+        if (!orchestrator.consoleApprovals.decide(id, allow)) return json(res, 409, { error: '这项操作已结束' });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
       method: 'GET', pattern: '/api/webchat/status',
-      handler: async ({ res, json }) => json(res, 200, {
+      handler: async ({ req, res, json }) => json(res, 200, {
+        approvals: isLocalConsoleRequest(req) ? orchestrator.consoleApprovals.list() : [],
         chatKey: WEB_CHAT_KEY,
         running: orchestrator.runningChats.has(WEB_CHAT_KEY),
         waiting: orchestrator.pendingWake.has(WEB_CHAT_KEY),

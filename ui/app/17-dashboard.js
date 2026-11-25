@@ -114,13 +114,14 @@ async function openChannelConnectModal() {
       <span class="cr-icon">${esc(item.icon)}</span>
       <div class="cr-main">
         <div class="cr-name">${esc(item.label)}
-          ${item.enabled ? '<span class="tag ok">已接入</span>' : ''}
+          ${item.enabled ? '<span class="tag">已启用</span>' : ''}
         </div>
         <div class="cr-desc">${esc(item.desc)}</div>
         <div class="cr-form" hidden>
           ${(item.form ?? []).map((f) => `
             <label><span>${esc(f.label)}</span>
               <input type="${esc(f.type ?? 'text')}" data-path="${esc(f.path)}"
+                     value="${esc(f.value ?? '')}"
                      placeholder="${esc(f.placeholder ?? '')}" autocomplete="off">
             </label>`).join('')}
           ${item.hint ? `<div class="connect-hint">ℹ️ ${esc(item.hint)}</div>` : ''}
@@ -135,8 +136,7 @@ async function openChannelConnectModal() {
 
   const overlay = modelModalShell({
     head: '添加链接',
-    body: `<div class="connect-list">${rowsHtml}</div>`,
-    foot: '<span class="muted" style="font-size:11.5px">接入的通道只在链接成功后出现在驾驶舱</span>'
+    body: `<div class="connect-list">${rowsHtml}</div>`
   });
 
   // 展开/收起表单
@@ -168,9 +168,13 @@ async function openChannelConnectModal() {
       const label = chId === 'mail' ? '邮箱' : chId === 'browser' ? '浏览器' : chId === 'qq' ? 'QQ' : chId;
       // QQ 的接入会联动拉起桥接进程；环境缺失时后端如实降级 —— 必须让用户看见，
       // 否则"接入成功但机器人不回"又是一口深坑。
-      const bridgeWarn = (chId === 'qq' && result.bridge && result.bridge !== '已拉起')
-        ? `；但桥接未启动：${result.bridge}` : '';
-      showAppAlert(`${label} 链接成功${result.status === 'error' ? '，但通道启动异常，请到通道页查看' : ''}${bridgeWarn} ✓`);
+      if (result.bridge && result.bridge !== '已拉起') {
+        showAppAlert(`${label} 配置已保存。\n${result.bridge}`);
+      } else if (chId === 'qq') {
+        showAppAlert('QQ 通道已启用，连接状态见驾驶舱。');
+      } else {
+        showAppAlert(`${label} 已连接。`);
+      }
       refreshDashboard({ quiet: true });
     } catch (error) {
       errNode.textContent = `建立链接失败：${error?.message ?? error}`;

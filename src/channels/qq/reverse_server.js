@@ -15,6 +15,7 @@
 // 取舍（UIA 通道固有，见 DESIGN.md）：无原始消息 ID 保证、发送者身份常不可
 // 验证、仅白名单会话、窗口最小化/遮挡时有巡检延迟 —— 事件 record 的
 // confidence 由上层按此口径标记。
+import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { escapeCqText } from '../../util.js';
 
@@ -91,10 +92,14 @@ export class OneBotReverseServer {
   async connect() {
     if (this.#wss) return undefined;   // 幂等：已在监听
     this.lastConnectError = '';
-    await new Promise((resolve, reject) => {
-      this.#wss = new WebSocketServer({ host: this.#host, port: this.#port }, resolve);
-      this.#wss.on('error', reject);
-    });
+    const server = new WebSocketServer({ host: this.#host, port: this.#port });
+    try {
+      await once(server, 'listening');
+    } catch (error) {
+      server.close();
+      throw error;
+    }
+    this.#wss = server;
     this.#wss.on('error', (error) => { this.#log(`[uia] WS 服务端错误: ${error?.message ?? error}`); });
     this.#wss.on('connection', (socket, req) => this.#acceptBridge(socket, req));
     this.status = 'started';
@@ -111,7 +116,9 @@ export class OneBotReverseServer {
       p.reject(new Error('通道已关闭'));
     }
     this.#pending.clear();
-    try { await new Promise((r) => this.#wss?.close(r)); } catch { /* ignore */ }
+    if (this.#wss) {
+      try { await new Promise((resolve) => this.#wss.close(resolve)); } catch { /* ignore */ }
+    }
     this.#wss = null;
     this.connected = false;
     this.status = 'stopped';

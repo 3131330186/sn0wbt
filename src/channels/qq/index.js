@@ -83,11 +83,13 @@ export class QQChannel {
   async start(ctx) {
     const { dispatchInbound, reportStatus, autoConnect = true } = ctx ?? {};
     this.#dispatchInbound = dispatchInbound;
-    this.#offStatus = this.client.onStatus((status) => reportStatus(status));
+    this.#offStatus?.();
+    this.#offStatus = this.client.onStatus((status) => reportStatus?.(status));
     // 接入向导语义：enabled=true 才开闸。未接入时反向 WS 服务端不监听，
     // 桥接连不上、绝不触碰用户自己登录的 QQ（读活配置 —— enable 端点
     // 改完配置再 startChannel，构造期缓存的切片会拿到旧值）。
     if (getConfig()?.channels?.qq?.enabled !== true) {
+      this.status = 'stopped';
       reportStatus?.({ connected: false, reason: '未接入（在「添加链接」中接入后可用）' });
       return undefined;
     }

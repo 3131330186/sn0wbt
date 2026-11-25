@@ -18,6 +18,7 @@ import { modelImageVerdict } from './vision-scan.js';
 import { currentProviders } from './providers.js';
 import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
+import { ConsoleApprovals, isLocalWebChatTurn } from './console-approvals.js';
 import { rescueUnsentReply } from './reply-rescue.js';
 
 export class Orchestrator {
@@ -37,6 +38,7 @@ export class Orchestrator {
     this.toolDefs = buildToolDefs();
 
     this.chatNameCache = new Map();    // groupId -> name
+    this.consoleApprovals = new ConsoleApprovals();
     this.wakeTimers = new Map();       // chatKey -> timer
     // 未读兜底定时器（2026-09-18）：1~3 档下"没触发会话"的散消息，
     // 窗口结束后若一直没有新消息来滚动重判，就在一个固定冷却后标为已读，
@@ -759,8 +761,9 @@ export class Orchestrator {
       && modelImageVerdict(cfg.api.provider, cfg.api.model) !== 'no-vision';
     const searchEnabled = cfg.webSearch?.enabled !== false;
     const toolsCfg = cfg.tools || {};
+    const localConsole = isLocalWebChatTurn(chatKey, triggerEntries, proactive);
     const skillContext = {
-      chatKey, kind, chatId, chatName,
+      localConsole, chatKey, kind, chatId, chatName,
       model: cfg.api.model,
       provider: cfg.api.provider,
       visionEnabled,
@@ -905,6 +908,8 @@ export class Orchestrator {
     const openAiTools = toOpenAiTools(toolDefs);
 
     const ctx = {
+      localConsole,
+      consoleApprovals: this.consoleApprovals,
       chatKey, kind, chatId,
       selfId: this.onebot.selfId,
       selfNickname,
