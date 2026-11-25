@@ -236,6 +236,7 @@ export class MailChannel {
    * @returns {{sent: true, messageId: string}} 失败抛错（结构化，调用方转 err）
    */
   async sendText(target, text, opts = {}) {
+    if (!this.enabled) throw new ChannelError(CHANNEL_ERROR_CODES.CHANNEL_OFFLINE, '邮件通道未启用');
     if (!target) throw new ChannelError(CHANNEL_ERROR_CODES.CAPABILITY_MISSING, '缺少收件人地址');
     const smtp = await this.#requireSmtp();
     const result = await smtp.send({

@@ -2,6 +2,7 @@
 // Electron 主进程与 headless 服务器都从这里启动。
 import http from 'node:http';
 import net from 'node:net';
+import { authorizeConsoleRequest, isLoopbackHostHeader } from './console-access.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1160,12 +1161,6 @@ export function createApp({ log = console.log } = {}) {
   // 服务只监听回环，但**浏览器里的任意网页都能向 127.0.0.1 发简单请求**，
   // 而 CORS 只挡"读响应"、挡不住"副作用"（改配置、暂停、重置数据…）。
   // 所以所有 /api/* 都必须来自回环 Host；带 Origin/Referer 时必须同源。
-  function isLoopbackHostHeader(host) {
-    return /^127\.0\.0\.1(:\d+)?$/.test(host)
-      || /^localhost(:\d+)?$/.test(host)
-      || /^\[::1\](:\d+)?$/.test(host);
-  }
-
   /**
    * Host 头是否可接受：
    *   · 回环（默认场景）—— 原有口径不变；
@@ -1204,20 +1199,7 @@ export function createApp({ log = console.log } = {}) {
   }
 
   function authorize(req) {
-    // 本机（回环 Host）**永远免令牌** —— 这是刻意的安全设计，不是漏洞：
-    //   · 对内的墙不存在也不需要：本机进程与控制台同权限（config.json 明文可读），
-    //     令牌从来不防"自己人"；
-    //   · 对浏览器侧的攻击（恶意网页借本机发请求 / DNS rebinding）由 originAllowed
-    //     的 Host/Origin/Referer 校验负责，与令牌无关；
-    //   · 令牌只管**对外**（非回环 Host 的远程访问）。
-    // 这样"开/关远程、设不设令牌"在机制上永远影响不到本机浏览器与桌面窗口
-    //（2026-11-07 实踩：设令牌后本机浏览器与桌面端双双被 401 挡死）。
-    const host = String(req.headers.host ?? '');
-    if (isLoopbackHostHeader(host)) return true;
-    const token = String(getConfig().server?.token ?? '');
-    if (!token) return true;
-    const url = new URL(req.url, 'http://127.0.0.1');
-    return req.headers['x-console-token'] === token || url.searchParams.get('token') === token;
+    return authorizeConsoleRequest(req, getConfig().server?.token);
   }
 
   // ── 配置脱敏 ────────────────────────────────────────────────────────────
@@ -1259,6 +1241,13 @@ export function createApp({ log = console.log } = {}) {
       }
     };
     walk(out);
+
+    // 邮箱接入向导把 IMAP / SMTP 授权码存在 pass 字段。回传配置只携带存在标记。
+    for (const account of [out.channels?.mail?.imap, out.channels?.mail?.smtp]) {
+      if (!account || !Object.hasOwn(account, 'pass')) continue;
+      account.hasPass = Boolean(String(account.pass ?? '').trim());
+      delete account.pass;
+    }
 
     // 密钥集合整体清空（不逐 key 暴露存在性）
     if (out.dshProviderKeys && typeof out.dshProviderKeys === 'object') {
@@ -1334,10 +1323,13 @@ export function createApp({ log = console.log } = {}) {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
 
+    if (pathname.startsWith('/api/')) {
+      if (!originAllowed(req)) return json(res, 403, { error: '请求来源不被信任' });
+      if (!authorize(req)) return json(res, 401, { error: '未授权' });
+    }
+
     // SSE
     if (pathname === '/api/events' && req.method === 'GET') {
-      if (!authorize(req)) return json(res, 401, { error: '未授权' });
-      if (!originAllowed(req)) return json(res, 403, { error: '请求来源不被信任' });
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -1363,12 +1355,6 @@ export function createApp({ log = console.log } = {}) {
     }
 
     if (pathname.startsWith('/api/')) {
-      if (!authorize(req)) return json(res, 401, { error: '未授权' });
-      // 来源校验：挡住"恶意网页借浏览器打 127.0.0.1"（CSRF / DNS rebinding）。
-      // 必须在 authorize 之后、路由分发之前。
-      if (!originAllowed(req)) {
-        return json(res, 403, { error: '请求来源不被信任（仅接受本机控制台的同源请求）' });
-      }
       const method = req.method;
 
       // 声明式路由分发（路由表在 src/routes.js）

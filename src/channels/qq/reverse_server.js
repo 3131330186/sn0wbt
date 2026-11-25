@@ -111,7 +111,9 @@ export class OneBotReverseServer {
       p.reject(new Error('通道已关闭'));
     }
     this.#pending.clear();
-    try { await new Promise((r) => this.#wss?.close(r)); } catch { /* ignore */ }
+    if (this.#wss) {
+      try { await new Promise((resolve) => this.#wss.close(resolve)); } catch { /* ignore */ }
+    }
     this.#wss = null;
     this.connected = false;
     this.status = 'stopped';

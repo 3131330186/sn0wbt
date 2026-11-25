@@ -989,10 +989,10 @@ c.section('13. 安全回归');
     assert.equal(r.status, 403, '外部来源 + 伪造头必须被拒绝');
   });
 
-  await c.check('配置了 server.token 时：错 token 401、对 token 200', async () => {
+  await c.check('配置了 server.token 时，本机控制台仍可免令牌访问', async () => {
     await request('POST', '/api/config', { body: { server: { token: 'real-console-token' } } });
-    const bad = await request('GET', '/api/status', { headers: { 'x-console-token': 'wrong-token' } });
-    assert.equal(bad.status, 401, `错 token 应 401，实际 ${bad.status}`);
+    const local = await request('GET', '/api/status');
+    assert.equal(local.status, 200);
     const good = await request('GET', '/api/status', { headers: { 'x-console-token': 'real-console-token' } });
     assert.equal(good.status, 200, `对 token 应 200，实际 ${good.status}`);
     // 恢复为空 token，避免影响后续用例
@@ -1012,6 +1012,11 @@ c.section('13. 安全回归');
     const r = await request('GET', '/api/no-such-endpoint');
     assert.equal(r.status, 404);
     assert.ok(r.data.error, '应返回错误说明');
+  });
+
+  await c.check('本机操作确认到期后不可再次批准', async () => {
+    const result = await hit('POST', '/api/webchat/approval', { body: { id: 'expired', allow: true } });
+    assert.equal(result.status, 409);
   });
 
   await c.check('请求体超过 2MB 被拒绝（防内存打爆），且不拖垮后续请求', async () => {

@@ -45,6 +45,7 @@ import { synthesize as synthesizeSpeech, resolveSpeechEndpoint, readCloneRef, CL
 import { resolveAdapter, ADAPTERS, FORMAT_IDS, capabilitiesText } from './speech/adapters/index.js';
 import { singingEnabled, getSingingEngine } from './speech/singing.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
+import { isLocalConsoleRequest } from './console-access.js';
 import { resolveLaunchCommand, openApp, smartLaunch } from './channels/launch.js';
 import { listQQInstances, focusQQInstance } from './channels/qq/instances.js';
 import { spawnBridgeProcess } from './channels/qq/bridge-process.js';
@@ -1376,6 +1377,7 @@ export function createRoutes(deps) {
         const entry = store.appendIncoming(WEB_CHAT_KEY, {
           mid: null,
           ts: Date.now(),
+          localConsole: isLocalConsoleRequest(req),
           senderId: 'web',
           senderName: String(getConfig().webChat?.senderName || '网页用户'),
           text
@@ -1392,8 +1394,19 @@ export function createRoutes(deps) {
       }
     },
     {
+      method: 'POST', pattern: '/api/webchat/approval',
+      handler: async ({ req, res, json }) => {
+        if (!isLocalConsoleRequest(req)) return json(res, 403, { error: '请在本机控制台确认操作' });
+        const { id, allow } = await readBody(req);
+        if (typeof id !== 'string' || typeof allow !== 'boolean') return json(res, 400, { error: '确认参数无效' });
+        if (!orchestrator.consoleApprovals.decide(id, allow)) return json(res, 409, { error: '这项操作已结束' });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
       method: 'GET', pattern: '/api/webchat/status',
-      handler: async ({ res, json }) => json(res, 200, {
+      handler: async ({ req, res, json }) => json(res, 200, {
+        approvals: isLocalConsoleRequest(req) ? orchestrator.consoleApprovals.list() : [],
         chatKey: WEB_CHAT_KEY,
         running: orchestrator.runningChats.has(WEB_CHAT_KEY),
         waiting: orchestrator.pendingWake.has(WEB_CHAT_KEY),

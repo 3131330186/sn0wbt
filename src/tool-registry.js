@@ -23,6 +23,7 @@
 // 加了 Skill 开关后如果再散落一处，就会变成六层条件、两个地方各判一半，
 // 必然出现"UI 说能用、运行时空工具列表"的割裂。现在只有这一处口径。
 
+import { getConfig } from './config.js';
 import { SKILL_ERROR, skillErrorText } from './skills/errors.js';
 // 默认用全局 SkillManager 单例：见下面 getToolAvailability 里的说明。
 // 无循环依赖 —— manager.js 只 import registry/capabilities/config/errors，不碰本文件。
@@ -54,6 +55,27 @@ export function registerTool(def) {
     requires: [],
     ...def
   }));
+}
+
+// QQ 消息、远程控制台、主动轮次均不可使用本机软件通道。
+export function registerConsoleTool(channel, def) {
+  registerTool({
+    ...def,
+    consoleChannel: channel,
+    async execute(ctx, args) {
+      const error = content => ({ isError: true, content });
+      if (ctx?.localConsole !== true || ctx.chatKey !== 'private:web' || !ctx.consoleApprovals) {
+        return error('此工具仅供本机网页对话使用。');
+      }
+      const enabled = () => getConfig().channels?.[channel]?.enabled === true;
+      if (!enabled()) return error('通道未启用。');
+      const submitted = structuredClone(args);
+      const approved = await ctx.consoleApprovals.request(def.name, submitted, ctx.abortSignal);
+      if (!approved || ctx.abortSignal?.aborted) return error('本机未批准本次操作。');
+      if (!enabled()) return error('通道已关闭。');
+      return def.execute(ctx, submitted);
+    }
+  });
 }
 
 /** 注销单个工具。 */
@@ -144,6 +166,15 @@ export function getToolAvailability(toolId, context = {}) {
   } = context;
 
   const deny = (code, reason) => ({ id: def.id, enabled: false, code, reason, skillId: def.skillId ?? null });
+
+  if (def.consoleChannel) {
+    if (runtimeContext.localConsole !== true || runtimeContext.chatKey !== 'private:web') {
+      return deny('local-console-only', '仅供本机网页对话使用');
+    }
+    if (getConfig().channels?.[def.consoleChannel]?.enabled !== true) {
+      return deny('channel-disabled', '通道未启用');
+    }
+  }
 
   // 1) 全局开关
   if (toolsCfg.enabled === false) {

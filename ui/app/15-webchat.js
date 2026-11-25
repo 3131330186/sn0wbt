@@ -80,6 +80,7 @@ function buildWebchatSkeleton() {
     </div>
     <div class="webchat-msgs" id="webchat-msgs"></div>
     <div class="webchat-typing" id="webchat-typing" hidden></div>
+    <div id="webchat-approvals" aria-live="polite"></div>
     <div class="webchat-composer">
       <textarea id="webchat-input" placeholder="发消息给机器人…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>
       <button class="btn" id="webchat-send">发送</button>
@@ -136,6 +137,37 @@ function buildWebchatSkeleton() {
   webchatSkeletonBuilt = true;
 }
 
+function renderWebchatApprovals(items = []) {
+  const box = $('#webchat-approvals');
+  if (!box) return;
+  const ids = items.map(item => item.id).join(',');
+  if (box.dataset.ids === ids) return;
+  box.dataset.ids = ids;
+  box.innerHTML = items.map(item => `
+    <div class="card">
+      <b>允许这次${esc(item.tool)}操作？</b>
+      <span class="muted">60 秒内未确认将取消</span>
+      <pre style="max-height:12em;overflow:auto;white-space:pre-wrap">${esc(JSON.stringify(item.args, null, 2))}</pre>
+      <button class="btn" data-id="${esc(item.id)}" data-allow="yes">允许一次</button>
+      <button class="btn" data-id="${esc(item.id)}" data-allow="no">拒绝</button>
+    </div>`).join('');
+  box.onclick = async event => {
+    const button = event.target.closest('button[data-id]');
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    try {
+      await api('/api/webchat/approval', { method: 'POST', body: JSON.stringify({
+        id: button.dataset.id, allow: button.dataset.allow === 'yes'
+      }) });
+    } catch (err) {
+      showAppAlert(err?.message || '提交决定失败');
+    } finally {
+      button.disabled = false;
+      scheduleWebchatReload();
+    }
+  };
+}
+
 /** 拉存档 + 状态。 */
 async function loadWebChatInner({ quiet = false } = {}) {
   const box = $('#webchat-page');
@@ -150,6 +182,7 @@ async function loadWebChatInner({ quiet = false } = {}) {
     webchatPaused = !!status.paused;
     webchatModel = String(status.model || '');
     if (!webchatSkeletonBuilt) buildWebchatSkeleton();
+    renderWebchatApprovals(status.approvals);
     renderWebchatMsgs({ keepScroll: quiet });
     renderWebchatStatus();
   } catch (e) {
@@ -179,6 +212,7 @@ function ensureWebchatStatusPoll() {
     if (state.tab !== 'webchat' || document.visibilityState !== 'visible') return;
     try {
       const status = await api('/api/webchat/status');
+      renderWebchatApprovals(status.approvals);
       const changed = (!!status.running) !== webchatRunning || (!!status.paused) !== webchatPaused;
       webchatRunning = !!status.running;
       webchatPaused = !!status.paused;

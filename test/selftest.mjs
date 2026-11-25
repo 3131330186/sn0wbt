@@ -294,7 +294,10 @@ refs:
     snowluma: { wsUrl: `ws://127.0.0.1:${PORTS.onebotWs}`, httpUrl: `http://127.0.0.1:${PORTS.onebotHttp}`, accessToken: '' },
     // 密闭性：本测试自建 config（不经 _harness），必须显式钉回 napcat 后端——
     // 否则 DEFAULT channels.qq.backend='uia' 会起反向服务端而非连本文件的 mock WS
-    channels: { qq: { backend: 'napcat', enabled: true } },
+    channels: {
+      qq: { backend: 'napcat', enabled: true },
+      mail: { imap: { pass: 'fixture-imap-code' }, smtp: { pass: 'fixture-smtp-code' } }
+    },
     persona: { botName: '审计Bot', participation: 'medium', roleText: '你是审计群里的机器人。' },
     allow: { groups: ['456'], private: ['777'] },
     deny: { groups: [], private: [] },
@@ -313,6 +316,37 @@ refs:
   const { createApp } = await import('../src/app.js');
   const app = createApp({ log: () => {} });
   await app.start();
+
+  {
+    const url = `http://127.0.0.1:${cfg.server.port}/api/config`;
+    const read = await fetch(url);
+    assert.equal(read.status, 200);
+    const mail = (await read.json()).channels.mail;
+    for (const protocol of ['imap', 'smtp']) {
+      assert.ok(!Object.hasOwn(mail[protocol], 'pass'));
+      assert.equal(mail[protocol].hasPass, true);
+    }
+    // 用 GET 的脱敏结果编辑主机名，同时显式清除 SMTP 的授权码。
+    mail.imap.host = 'imap.example.test';
+    mail.smtp.pass = '';
+    const saved = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channels: { mail } })
+    });
+    assert.equal(saved.status, 200);
+    const returned = (await saved.json()).config.channels.mail;
+    const stored = app.getConfig().channels.mail;
+    for (const protocol of ['imap', 'smtp']) {
+      assert.ok(!Object.hasOwn(returned[protocol], 'pass'));
+      assert.ok(!Object.hasOwn(stored[protocol], 'hasPass'));
+    }
+    assert.equal(returned.imap.hasPass, true);
+    assert.equal(returned.smtp.hasPass, false);
+    assert.equal(stored.imap.host, mail.imap.host);
+    assert.equal(stored.imap.pass, cfg.channels.mail.imap.pass);
+    assert.equal(stored.smtp.pass, '');
+    pass('邮箱授权码：配置读写脱敏，保留未编辑值并支持显式清除');
+  }
 
   // 同步原语
   const waitSessionDone = async (triggerSubstring, timeout = 9000) => {

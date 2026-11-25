@@ -107,6 +107,36 @@ await c.check('真实 QQ 私聊 sendVoice 仍走协议端（降级不外溢）',
   assert.equal(hit, true, 'QQ 私聊语音应真实调 OneBot sendSegments');
 });
 
+await c.check('本机网页对话调用浏览器须先在控制台批准对应操作', async () => {
+  const config = app.getConfig().channels.browser;
+  const channel = app.channelManager.get('browser');
+  const originalList = channel.listTabs;
+  const originalEnabled = config.enabled;
+  let calls = 0;
+  try {
+    config.enabled = true;
+    channel.listTabs = async () => { calls++; return []; };
+    ctx.llm.state.script[ctx.llm.state.requests.length] = {
+      toolCalls: [{ name: 'browser_tabs', args: {} }]
+    };
+    await request('POST', '/api/webchat/send', { body: { text: '查看本机标签页测试' } });
+    const pending = await waitFor(async () => {
+      const status = await request('GET', '/api/webchat/status');
+      return status.data.approvals[0];
+    }, 8000, '等待本机工具确认');
+    assert.equal(calls, 0);
+    assert.deepEqual(pending.args, {});
+    const body = { id: pending.id, allow: true };
+    assert.equal((await request('POST', '/api/webchat/approval', { body })).status, 200);
+    await waitFor(() => calls === 1, 2000, '已批准的工具执行一次');
+    assert.equal((await request('POST', '/api/webchat/approval', { body })).status, 409);
+    await waitSessionDone('查看本机标签页测试');
+  } finally {
+    config.enabled = originalEnabled;
+    channel.listTabs = originalList;
+  }
+});
+
 // ── 4) 重启持久 + 清空 ───────────────────────────────────────────────────
 await c.check('清空 private:web 存档（正则扩展到 web）', async () => {
   const r = await request('POST', '/api/chats/private_web/clear', { body: '{}' });
