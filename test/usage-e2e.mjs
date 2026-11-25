@@ -86,13 +86,16 @@ const realFetch = async (url, opt = {}) => {
   });
 };
 
+const uiErrors = [];
 const sandbox = {
   document, window: null,
   localStorage: { getItem: () => null, setItem() {} },
   location: { href: 'http://127.0.0.1:' + port + '/' },
   fetch: realFetch,
   EventSource: function () { this.addEventListener = () => {}; this.close = () => {}; },
-  setTimeout, clearTimeout, setInterval, clearInterval, console,
+  setTimeout, clearTimeout, setInterval, clearInterval,
+  console: { ...console, error: (...args) => { uiErrors.push(args.map(String).join(' ')); console.error(...args); } },
+  MutationObserver: class { observe() {} disconnect() {} },
   alert: () => {}, confirm: () => true,
   matchMedia: () => ({ matches: false, addEventListener() {} }),
   navigator: { userAgent: 'node' }, requestAnimationFrame: (f) => setTimeout(f, 0),
@@ -112,7 +115,7 @@ const { TIER_SLIDER_BANDS, sliderToTier, tierToSlider } = await import('../src/t
 const { matchPriceTable } = await import('../src/model-prices.js');
 Object.assign(sandbox, { TIER_SLIDER_BANDS, sliderToTier, tierToSlider, matchPriceTable });
 
-// 按浏览器 defer 顺序拼接 12 段普通脚本后 vm 执行（桥的 import 由上面的注入顶替）。
+// 按实际页面顺序加载脚本，桥的 import 由上面的注入顶替。
 const ctx = vm.createContext(sandbox);
 const appCodeStripped = (await import('./_ui-load.mjs')).loadUiAppCode().code
   .replace(/^export\s+(function|const|let|async function|class)/gm, '$1');
@@ -233,6 +236,7 @@ check('点击后 state.tab = usage', vm.runInContext('state.tab', ctx) === 'usag
 check('点击后页面有实质内容（含「用量与成本」）', clickedHtml.includes('用量与成本'), clickedHtml.slice(0, 80));
 check('点击后不是错误提示', !clickedHtml.includes('加载失败'), clickedHtml.slice(0, 80));
 
+check('启动和切换页签期间没有控制台错误', uiErrors.length === 0, uiErrors.join('\n'));
 await app.stop();
 console.log('\n' + (fail ? 'FAILED ' + fail : 'ALL PASSED ' + pass));
 process.exit(fail ? 1 : 0);

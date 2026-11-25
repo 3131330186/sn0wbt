@@ -752,6 +752,7 @@ export function createApp({ log = console.log } = {}) {
   // 401 / 未连接时：轮换下一个候选 token 重连（3 秒重连循环已有，轮换成本为零）
   let tokenSyncRetryAt = 0;
   function maybeRecoverOnebot() {
+    if (qqChannel.backend !== 'napcat' || getConfig()?.channels?.qq?.enabled !== true) return;
     const now = Date.now();
     if (now - tokenSyncRetryAt < 5000) return;   // 限频
     tokenSyncRetryAt = now;
@@ -1663,7 +1664,7 @@ export function createApp({ log = console.log } = {}) {
     // enabled=true 只让反向 WS 开闸，桥接进程不会自己回来（它不是服务，
     // 是 ps1 拉起的常驻进程）——启动时补一笔，桥接进程自身有互斥体，
     // 已在跑就自动退出，重复拉起无副作用。
-    if (getConfig()?.channels?.qq?.enabled === true) {
+    if (qqChannel.backend === 'uia' && getConfig()?.channels?.qq?.enabled === true) {
       try {
         const { spawnBridgeProcess } = await import('./channels/qq/bridge-process.js');
         const note = spawnBridgeProcess('start-bridge.ps1');
@@ -1682,9 +1683,9 @@ export function createApp({ log = console.log } = {}) {
     // "最多 2 秒 + 一次连接建立"。
     const obWsPort = snowlumaWsPort();
     obPortPollTimer = setInterval(async () => {
-      if (onebot.connected) return;          // 连着：无事可做（轮询本身极廉价）
+      if (qqChannel.backend !== 'napcat' || getConfig()?.channels?.qq?.enabled !== true || onebot.connected) return;
       const open = await isPortOpen('127.0.0.1', obWsPort);
-      if (open && !onebot.connected) {
+      if (open && obPortPollTimer && getConfig()?.channels?.qq?.enabled === true && !onebot.connected) {
         // 端口从关到开：立即重连（reconnect 会重置退避，秒级恢复）
         onebot.reconnect();
       }
@@ -1757,6 +1758,7 @@ export function createApp({ log = console.log } = {}) {
     orchestrator.stopReminderLoop();
     if (communitySyncTimer) clearInterval(communitySyncTimer);
     if (obPortPollTimer) clearInterval(obPortPollTimer);
+    obPortPollTimer = null;
     // 索引缓存立刻落盘：正常运行中靠防抖（5s），退出前必须写一次，
     // 否则最后的会话变动丢失、下次启动要靠后台对账补（慢路径）
     sessions.flushIndexCache();

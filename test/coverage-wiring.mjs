@@ -54,7 +54,15 @@ window.EventTarget.prototype.addEventListener = function (type, ...rest) {
   return origAdd.call(this, type, ...rest);
 };
 
-window.fetch = (input, init) => fetch(new URL(String(input), base).href, init);
+window.fetch = (input, init) => {
+  const url = new URL(String(input), base);
+  if (url.pathname === '/api/channels/qq/instances') return Promise.resolve(Response.json({ instances: [] }));
+  if (url.pathname === '/api/voice-call/devices') return Promise.resolve(Response.json({ ok: true, endpoints: [] }));
+  if (url.pathname === '/api/device/status') return Promise.resolve(Response.json({
+    ok: true, enabled: false, devices: [], builtinBlocklist: [{ pkg: 'example.test', name: '测试应用', warn: '' }]
+  }));
+  return fetch(url.href, init);
+};
 window.EventSource = class { constructor() {} addEventListener() {} close() {} };
 window.alert = () => {};
 window.confirm = () => true;
@@ -103,7 +111,12 @@ function wired(el) {
  * 所以这些复选框没有自己的监听器是正常的，不算缺陷 —— 这里单独标记出来，
  * 与"真的没人管"区分开（后者才是 bug）。
  */
+const readByDeviceSave = new Set();
+function deviceFieldKey(field) {
+  return field.id || (field.dataset.blPkg ? 'pkg:' + field.dataset.blPkg : null);
+}
 function batchRead(el) {
+  if (el.closest('#view-device') && readByDeviceSave.has(deviceFieldKey(el))) return true;
   const type = (el.getAttribute('type') || '').toLowerCase();
   if (type !== 'checkbox' && type !== 'radio') return false;
   const box = el.closest('.model-modal, .modal');
@@ -153,16 +166,42 @@ const cov = {};
 cov['首屏'] = scan('首屏');
 
 // ── 1) 逐个页签（点真实按钮）────────────────────────────────────────────
-// 注意：8 个 view 都是 index.html 里的静态节点，切页签不会新建元素
-//（它们在首屏那轮就已全部扫到）。所以这里统计"访问过的页签数"，而不是新增元素数。
-// ⚠️ 这份列表必须与 index.html 里的 .tab 保持一致 —— 漏掉一个页签，
-// 那一页的按钮就永远不会被接线检查覆盖（skills/plugins 曾经就是这样被漏掉的）。
+// 遍历实际导航，并检查每个按钮确实切到了自己的视图。
 const visitedTabs = [];
-for (const t of ['sessions', 'chats', 'memory', 'usage', 'skills', 'plugins', 'snowluma', 'settings']) {
-  const tabBtn = window.document.querySelector(`.tab[data-tab="${t}"]`);
-  if (tabBtn) tabBtn.click(); else { try { window.switchTab(t); } catch { /* ignore */ } }
+// 外联表单由「保存」统一读取。记录真实保存回调读取过的控件，拦截写请求。
+function checkDeviceSave() {
+  const view = window.document.getElementById('view-device');
+  const fields = [...view.querySelectorAll('input, textarea')];
+  const fetchBefore = window.fetch;
+  let submitted = false;
+  try {
+    for (const field of fields) {
+      const prop = field.type === 'checkbox' ? 'checked' : 'value';
+      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), prop);
+      Object.defineProperty(field, prop, { configurable: true, get() {
+        const key = deviceFieldKey(field);
+        if (key) readByDeviceSave.add(key);
+        return descriptor.get.call(field);
+      } });
+    }
+    window.fetch = (url, opts) => {
+      if (url !== '/api/device/config' || opts.method !== 'POST') return fetchBefore(url, opts);
+      submitted = true;
+      return Promise.resolve(Response.json({ ok: true }));
+    };
+    view.querySelector('#device-save-btn').click();
+    if (!submitted) throw new Error('点击保存后未收到设备配置请求');
+  } finally {
+    window.fetch = fetchBefore;
+    for (const field of fields) delete field[field.type === 'checkbox' ? 'checked' : 'value'];
+  }
+}
+for (const tabBtn of window.document.querySelectorAll('.tab[data-tab]')) {
+  const t = tabBtn.dataset.tab;
+  tabBtn.click();
   await sleep(800);
-  visitedTabs.push(t);
+  if (window.document.getElementById('view-' + t)?.classList.contains('active')) visitedTabs.push(t);
+  if (t === 'device') await c.check('外联设置的保存按钮提交配置', checkDeviceSave);
   cov[`页签/${t}`] = scan(`页签/${t}`);
 }
 

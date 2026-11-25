@@ -1048,6 +1048,103 @@ c.section('13. 安全回归');
   );
 }
 
+c.section('接入向导、网页会话与语音设置');
+
+await c.check('浏览器接入失败返回原因，保留地址以便重试，停用后清除错误', async () => {
+  let requests = 0;
+  const cdp = http.createServer((_req, res) => {
+    requests++;
+    res.writeHead(503);
+    res.end('test CDP offline');
+  });
+  const cdpUrl = 'http://127.0.0.1:' + await listen(cdp);
+  try {
+    const failed = await hit('POST', '/api/channels/browser/enable', { body: { config: { cdpUrl } } });
+    assert.equal(failed.status, 502);
+    assert.equal(failed.data.ok, false);
+    assert.equal(failed.data.enabled, true);
+    assert.match(failed.data.error, /CDP/);
+    assert.ok(requests > 0, '应连接表单里刚保存的地址');
+    const catalog = await hit('GET', '/api/channels/catalog');
+    assert.equal(catalog.status, 200);
+    const browser = catalog.data.catalog.find(item => item.id === 'browser');
+    assert.equal(browser.form.find(field => field.path === 'cdpUrl').value, cdpUrl);
+    assert.equal(browser.enabled, true);
+    const stop = await hit('POST', '/api/channels/browser/enable', { body: { enabled: false } });
+    assert.equal(stop.data.status, 'stopped');
+    const list = await hit('GET', '/api/channels');
+    const state = list.data.channels.find(item => item.id === 'browser');
+    assert.equal(state.status, 'stopped');
+    assert.equal(state.lastError, null);
+  } finally {
+    await new Promise(resolve => cdp.close(resolve));
+  }
+});
+
+await c.check('邮箱接入表单保留已有授权码，只回显服务器和白名单', async () => {
+  const config = { 'imap.host': 'mail.example.test', 'imap.pass': 'test-imap',
+    'smtp.pass': 'test-smtp', allowedFromText: 'alice, bob' };
+  const save = body => hit('POST', '/api/channels/mail/enable', { body: { enabled: false, config: body } });
+  assert.equal((await save(config)).status, 200);
+  assert.equal((await save({ 'imap.pass': '', 'smtp.pass': '' })).status, 200);
+  assert.equal(app.getConfig().channels.mail.imap.pass, 'test-imap');
+  assert.equal(app.getConfig().channels.mail.smtp.pass, 'test-smtp');
+  const r = await hit('GET', '/api/channels/catalog');
+  const fields = Object.fromEntries(r.data.catalog.find(item => item.id === 'mail').form.map(f => [f.path, f.value]));
+  assert.equal(fields['imap.host'], 'mail.example.test');
+  assert.equal(fields.allowedFromText, 'alice, bob');
+  assert.equal(fields['imap.pass'], '');
+  assert.equal(fields['smtp.pass'], '');
+});
+
+await c.check('未注册的通道不能启动，未知会话不能中止', async () => {
+  const launch = await hit('POST', '/api/channels/unknown/launch');
+  assert.equal(launch.status, 404);
+  assert.match(launch.data.error, /未知通道/);
+  const abort = await hit('POST', '/api/sessions/nonexistent-id/abort');
+  assert.equal(abort.status, 409);
+  assert.equal(abort.data.ok, false);
+});
+
+await c.check('插件重扫返回清单，清理遗留配置后仍可识别不存在的插件', async () => {
+  const reload = await hit('POST', '/api/skills/reload');
+  assert.equal(reload.status, 200);
+  assert.ok(Array.isArray(reload.data.loaded));
+  app.updateConfig({ skills: { 'absent-fixture': { enabled: true } } });
+  const clean = await hit('POST', '/api/skills/cleanup', { body: { ids: ['absent-fixture'] } });
+  assert.deepEqual(clean.data.removed, ['absent-fixture']);
+  assert.equal(app.getConfig().skills['absent-fixture'], undefined);
+  const del = await hit('DELETE', '/api/skills/absent-fixture');
+  assert.equal(del.status, 404);
+  assert.equal(del.data.ok, false);
+});
+
+await c.check('网页会话拒绝空消息，状态和消息指向同一会话', async () => {
+  const before = await hit('GET', '/api/webchat/messages');
+  const sent = await hit('POST', '/api/webchat/send', { body: { text: '  ' } });
+  assert.equal(sent.status, 400);
+  const after = await hit('GET', '/api/webchat/messages');
+  assert.ok(Array.isArray(after.data.messages));
+  assert.deepEqual(after.data.messages, before.data.messages);
+  const status = await hit('GET', '/api/webchat/status');
+  assert.equal(status.data.chatKey, after.data.chatKey);
+  assert.equal(typeof status.data.running, 'boolean');
+});
+
+await c.check('通话白名单、试听音色保存后可读回，空试听和无效音频返回校验错误', async () => {
+  const call = await hit('POST', '/api/voice-call/config', { body: { whitelist: [' test-account ', ''] } });
+  assert.equal(call.data.ok, true);
+  assert.deepEqual((await hit('GET', '/api/voice-call/status')).data.whitelist, ['test-account']);
+  const speech = await hit('POST', '/api/speech/config', { body: { voice: 'test-voice' } });
+  assert.equal(speech.data.ok, true);
+  assert.equal((await hit('GET', '/api/speech/status')).data.voice, 'test-voice');
+  for (const endpoint of ['/api/speech/preview', '/api/speech/clone-ref']) {
+    const invalid = await hit('POST', endpoint, { body: {} });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.data.ok, false);
+  }
+});
+
 // ── 14. 破坏性接口（放这里：会清空数据目录，必须在所有只读断言之后） ─────
 c.section('14. 破坏性接口（最后执行）');
 {
@@ -1092,7 +1189,7 @@ c.section('15. 接口覆盖率统计');
     for (const r of routes) {
       if (!r.isRegex) {
         const key = `${r.method} ${r.literal}`;
-        if (SKIP.has(key)) { covered.push(`${key}（跳过：会开窗/动用户进程）`); continue; }
+        if (SKIP.has(key)) continue;
         // method:'*' 声明（同一路由处理 GET/POST 等多种方法）：任一方法打过即算覆盖
         const hitAny = r.method === '*'
           ? [...exercised].some((e) => e.endsWith(' ' + r.literal))
@@ -1110,13 +1207,14 @@ c.section('15. 接口覆盖率统计');
       (ok ? covered : missing).push(`${r.method} ${r.literal}`);
     }
 
-    const pct = Math.round((covered.length / routes.length) * 100);
-    console.log(`      路由总数 ${routes.length}，已覆盖 ${covered.length}（${pct}%），跳过 ${SKIP.size} 条`);
+    const eligible = covered.length + missing.length;
+    const pct = 100 * covered.length / eligible;
+    console.log(`      实际命中 ${covered.length}/${eligible}（${pct.toFixed(1)}%），总路由 ${routes.length}，跳过 ${routes.length - eligible} 条`);
     if (missing.length) {
       console.log('      未覆盖：');
       for (const x of missing) console.log(`        - ${x}`);
     }
-    assert.ok(pct >= 90, `接口覆盖率只有 ${pct}%（${covered.length}/${routes.length}），未覆盖：\n  ${missing.join('\n  ')}`);
+    assert.ok(pct >= 90, `接口覆盖率只有 ${pct.toFixed(1)}%（${covered.length}/${eligible}），未覆盖：\n  ${missing.join('\n  ')}`);
   });
 }
 

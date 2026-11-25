@@ -44,6 +44,13 @@ export const CHANNEL_CATALOG = [
   }
 ];
 
+/** 只回显目录声明的表单字段，密码留空供用户按需更新。 */
+export function channelFormValue(field, config) {
+  if (field.type === 'password') return '';
+  if (field.path === 'allowedFromText') return Array.isArray(config?.allowedFrom) ? config.allowedFrom.join(', ') : '';
+  return field.path.split('.').reduce((value, key) => value?.[key], config) ?? '';
+}
+
 /** dot-path 写入嵌套对象（'imap.host' → { imap: { host: v } }），不打平已有键。 */
 export function setByPath(obj, dottedPath, value) {
   const keys = String(dottedPath).split('.');
